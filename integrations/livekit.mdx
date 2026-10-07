@@ -1,7 +1,7 @@
 ---
-title: "LiveKit: real-time video and recording"
+title: "LiveKit Integration: Real-Time Audio and Video Sessions"
 sidebarTitle: "LiveKit"
-description: "How Sahara uses LiveKit WebRTC rooms to deliver real-time audio and video for peer support sessions, including token generation and the session start flow."
+description: "How Sahara uses LiveKit WebRTC rooms for real-time audio and video in peer support sessions, including token generation and the session start flow."
 ---
 
 LiveKit provides the real-time WebRTC infrastructure for every Sahara peer support session: participants join a shared audio/video room, and LiveKit handles signalling, media routing, and per-participant recording. Each session maps 1-to-1 with a LiveKit room named `session-<sessionId>`, where `sessionId` is a UUID from the Postgres `sessions` table.

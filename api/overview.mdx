@@ -1,7 +1,7 @@
 ---
-title: "Sahara REST API overview and base URL"
+title: "Sahara REST API Reference — Base URL and Endpoints"
 sidebarTitle: "Overview"
-description: "Explore every HTTP endpoint Sahara exposes via its Next.js App Router, plus base URL, auth requirements, and a full endpoint index."
+description: "Explore every HTTP endpoint Sahara exposes via its Next.js App Router — base URL, session-cookie auth requirements, and a complete endpoint index."
 ---
 
 Sahara exposes a set of HTTP endpoints under `app/api/` that are consumed exclusively by its own Next.js frontend. Every endpoint is a Next.js App Router Route Handler; all routes guard access by calling `requireUser()` or `requireProfessional()` server-side, so a valid Supabase session must be present on every request before any business logic runs.

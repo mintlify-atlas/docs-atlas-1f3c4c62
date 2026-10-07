@@ -1,5 +1,5 @@
 ---
-title: "Sahara architecture and request flow"
+title: "Sahara platform architecture and end-to-end request flow"
 sidebarTitle: "Overview"
 description: "A layered walkthrough of Sahara's Next.js App Router frontend, Supabase backend, LiveKit video infrastructure, and Groq/OpenRouter AI pipeline."
 ---
@@ -55,9 +55,8 @@ The happy path for a user joining a session and receiving an AI analysis unfolds
 
 ```
 app/
-  (auth)/              # Auth pages (login, signup, professional flows)
-  (user)/              # User-facing pages (dashboard, sessions, journal, etc.)
-  (professional)/      # Professional/counselor pages
+  (auth)/              # Auth pages (login, signup, professional-login, professional-signup)
+  (user)/              # User-facing pages (dashboard, sessions, journal, progress, etc.)
   api/                 # API routes (sessions, transcription, analysis, etc.)
   auth/                # OAuth callback, logout routes
   page.tsx             # Root landing page
@@ -75,7 +74,7 @@ tests/                 # Playwright tests
 ```
 
 <Tip>
-  Route groups — the `(auth)`, `(user)`, and `(professional)` folders — keep segment-specific layouts and middleware isolated without affecting the URL structure.
+  Route groups — `(auth)` and `(user)` — keep segment-specific layouts and middleware isolated without affecting the URL structure. Professional authentication pages (login and signup) live inside `(auth)/` alongside regular user flows.
 </Tip>
 
 ## Explore further

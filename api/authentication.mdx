@@ -1,5 +1,5 @@
 ---
-title: "Authenticate requests to the Sahara API"
+title: "Sahara API Authentication — Sessions and Role Guards"
 sidebarTitle: "Authentication"
 description: "Learn how Supabase Auth session cookies, Google OAuth callbacks, and server-side role guards protect every Sahara API route handler."
 ---
@@ -37,7 +37,7 @@ Sahara's API relies entirely on Supabase Auth session cookies — no API key or 
     2. Google redirects back to `<YOUR_SUPABASE_URL>/auth/v1/callback` with an authorization code.
     3. Supabase exchanges the code for tokens and redirects to `/auth/callback?code=<code>`.
     4. The callback handler calls `supabase.auth.exchangeCodeForSession(code)`.
-    5. If the authenticated user has no row in the `users` table yet, one is created automatically using the display name from `user_metadata`.
+    5. If the authenticated user has no row in the `users` table yet, one is created automatically. The `display_name` is resolved from `user_metadata.full_name`, then `user_metadata.name`, then the email prefix, falling back to `'User'`.
     6. Session cookies are set and the user is redirected to their destination.
 
     **Google Cloud Console redirect URI**
@@ -111,7 +111,7 @@ export async function createServerClientInstance() {
 | Helper | Checks | Throws on failure |
 |---|---|---|
 | `requireUser()` | Valid Supabase session → `users` row exists | `Error('Unauthorized: User not authenticated')` |
-| `requireProfessional()` | Valid session → `professionals` row exists **and** `verified === true` | `Error('Unauthorized: …')` or `Error('Forbidden: …')` |
+| `requireProfessional()` | Valid session → `professionals` row exists **and** `verified === true` | `Error('Unauthorized: Professional not authenticated')` if no row; `Error('Forbidden: Professional not verified')` if unverified |
 
 ## User Roles
 
@@ -130,7 +130,7 @@ Sahara has two distinct account roles. The role is determined by which table (`u
 
 | Status | Cause |
 |---|---|
-| `401 Unauthorized` | No active Supabase session — the user is not logged in, or the session has expired. |
+| `401 Unauthorized` | No active Supabase session (not logged in or session expired), or a valid session exists but no matching row was found in the `users` or `professionals` table. |
 | `403 Forbidden` | The user has a valid session but is a professional with `verified: false`. |
 
 ## Signing Out

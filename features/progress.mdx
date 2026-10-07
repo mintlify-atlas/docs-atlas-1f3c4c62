@@ -1,5 +1,5 @@
 ---
-title: "Progress Tracking and Wellbeing Trends"
+title: "Progress Tracking: Wellbeing Trends and AI Analyses"
 sidebarTitle: "Progress"
 description: "Aggregate AI analyses, session transcripts, and journal entries into a longitudinal wellbeing dashboard with trend and theme visualisation."
 ---
@@ -92,7 +92,7 @@ Content-Type: application/json
 { "sessionId": "<uuid>" }
 ```
 
-The `/api/analyze` route fetches the user's transcript history (sessions, uploads, and opted-in journal entries), constructs an LLM prompt, and writes the result as a new row in `ai_analyses` containing `summary`, `trend`, and extracted themes. The response is returned to the client immediately and displayed on the page.
+The `/api/analyze` route fetches the user's transcript history (sessions, uploads, and opted-in journal entries), constructs an LLM prompt, and inserts a new row in `ai_analyses` containing only `summary` and `trend`. The LLM also returns a `themes` array in the API response, but themes are not stored as a dedicated database column — they are embedded in the `summary` text and parsed client-side on the progress page. The full analysis response is returned to the client immediately and displayed on the page.
 
 ## Themes
 

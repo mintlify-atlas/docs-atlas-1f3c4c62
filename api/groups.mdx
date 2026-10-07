@@ -1,5 +1,5 @@
 ---
-title: "Groups API — create and list support groups"
+title: "Groups API — create and fetch peer support groups"
 sidebarTitle: "Groups"
 description: "Create and retrieve topic-based support groups that anchor live peer sessions, with configurable session types for every care model."
 ---
@@ -67,16 +67,6 @@ Returns the newly created `Group` object.
 | `400` | `topic` or `sessionType` is missing, or `sessionType` is not a valid value |
 | `401` | No authenticated user session |
 | `500` | Database insertion failure |
-
----
-
-## GET /api/groups
-
-<span style={{display:"inline-block",background:"#2563eb",color:"#fff",borderRadius:"4px",padding:"2px 8px",fontWeight:700,fontSize:"0.8rem",marginBottom:"1rem"}}>GET</span> `/api/groups`
-
-<Warning>
-  This endpoint is not yet implemented in the current route file. A `GET /api/groups` handler does not exist in `app/api/groups/route.ts`. The endpoint will return a `405 Method Not Allowed` until it is added.
-</Warning>
 
 ---
 

@@ -1,5 +1,5 @@
 ---
-title: "Group Sessions and Live Video Rooms"
+title: "Sahara Group Sessions: Live Video Rooms with LiveKit"
 sidebarTitle: "Sessions"
 description: "Create or join anonymous live video rooms backed by LiveKit. Supports peer-only, peer-plus-counselor, and one-on-one session types."
 ---
@@ -79,7 +79,7 @@ export type SessionType = 'peer' | 'peer_counselor' | 'one_on_one';
     ```
   </Step>
   <Step title="Post-session analysis">
-    After the room closes, each participant's transcript (captured by the in-browser `useSpeechRecognition` hook) is persisted to `session_participants.transcript`. Users can then navigate to `/sessions/<sessionId>/analyze` to trigger an AI analysis via `POST /api/analyze`, which writes a row to `ai_analyses` containing a `summary`, `trend`, and `themes[]`.
+    After the room closes, each participant's transcript (captured by the in-browser `useSpeechRecognition` hook) is persisted to `session_participants.transcript`. Users can then navigate to `/sessions/<sessionId>/analyze` to trigger an AI analysis via `POST /api/analyze`, which inserts a row into `ai_analyses` containing a `summary` and `trend`. The LLM also returns a `themes` array in the API response, but themes are not stored as a separate database column — they are parsed from the `summary` text on the progress page.
   </Step>
 </Steps>
 

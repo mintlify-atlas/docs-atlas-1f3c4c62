@@ -1,5 +1,5 @@
 ---
-title: "Sessions API — start, join, and end sessions"
+title: "Sessions API — start, join, and end live sessions"
 sidebarTitle: "Sessions"
 description: "Manage the full lifecycle of live video sessions — creating or joining a LiveKit room, ending it, and persisting recording metadata per participant."
 ---
@@ -65,6 +65,10 @@ Starts a new session for the given group, or joins an existing active session if
       The session type configured on the group.
     </ResponseField>
   </Expandable>
+</ResponseField>
+
+<ResponseField name="logs" type="string[]">
+  Internal diagnostic log entries recorded at each step of the session start flow. Present on both success and error responses. Treat these as opaque debug output — do not depend on their content in production clients.
 </ResponseField>
 
 ### Errors
@@ -202,6 +206,21 @@ curl -X POST \
     "id": "e3b0c442-98fc-1c14-9afb-f4c8996fb924",
     "topic": "Anxiety & Overthinking",
     "sessionType": "peer"
-  }
+  },
+  "logs": [
+    "1: calling requireUser",
+    "2: user=b9d1f4a2-1234-5678-9abc-def012345678",
+    "3: groupId=e3b0c442-98fc-1c14-9afb-f4c8996fb924",
+    "4: supabase created",
+    "5: group query done, error=none",
+    "6: existingSession=null",
+    "7b: creating new session",
+    "8b: session insert done, error=none, id=a1b2c3d4-0000-4000-8000-112233445566",
+    "9b: insert participant, error=none",
+    "10b: creating LiveKit room session-a1b2c3d4-0000-4000-8000-112233445566",
+    "11b: LiveKit room created",
+    "12: generating token for room session-a1b2c3d4-0000-4000-8000-112233445566",
+    "13: token generated, length=312"
+  ]
 }
 ```

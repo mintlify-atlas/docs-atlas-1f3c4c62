@@ -1,5 +1,5 @@
 ---
-title: "Supabase: auth, database, and storage"
+title: "Supabase Integration: Auth, Database, and Storage Buckets"
 sidebarTitle: "Supabase"
 description: "How Sahara uses Supabase for anonymous authentication, Postgres with row-level security, and audio file storage in peer support sessions."
 ---
@@ -110,7 +110,7 @@ For a full description of the RLS policies protecting each table, see the [Secur
 
 Audio recordings captured during sessions are stored in the **`audio-recordings`** Supabase Storage bucket. The bucket was made publicly readable in migration `0011_make_audio_bucket_public.sql` so that the transcription pipeline can download files over a plain HTTPS URL without requiring a service-role token on every request.
 
-After a recording is uploaded, its public URL is written to the `audio_recording_url` column of the `session_participants` table. The `/api/transcribe` route reads this URL, downloads the audio buffer, and forwards it to the Groq Whisper API.
+Audio files uploaded through the session recording flow are stored in this bucket. The `/api/transcribe` route accepts a `recordingId`, queries the `recordings` table for the file's `file_url` and `file_name`, downloads the audio buffer over HTTPS, and forwards it to the Groq Whisper API for transcription.
 
 ## Environment variables
 

@@ -1,5 +1,5 @@
 ---
-title: "Sahara database schema and data model"
+title: "Sahara database schema, tables, and migration history"
 sidebarTitle: "Database"
 description: "Complete reference for Sahara's Supabase Postgres schema: tables, RLS helper functions, TypeScript types, and the full migration history."
 ---
@@ -138,11 +138,12 @@ export interface Database {
       forum_prompts:        { Row: ForumPrompt;        Insert: ...; Update: ... };
       forum_responses:      { Row: ForumResponse;      Insert: ...; Update: ... };
       helpline_requests:    { Row: HelplineRequest;    Insert: ...; Update: ... };
+      recordings:           { Row: Recording;          Insert: ...; Update: ... };
     };
     Functions: {
-      current_app_user_id:     { Args: {}; Returns: string };
-      current_professional_id: { Args: {}; Returns: string };
-      is_verified_professional:{ Args: {}; Returns: boolean };
+      current_app_user_id:     { Args: Record<string, never>; Returns: string };
+      current_professional_id: { Args: Record<string, never>; Returns: string };
+      is_verified_professional:{ Args: Record<string, never>; Returns: boolean };
     };
   };
 }
@@ -156,7 +157,7 @@ Migrations live in `supabase/migrations/` and must be applied in sequence via `s
 
 | File | What it adds |
 | --- | --- |
-| `0001_init.sql` | Full initial schema: all 11 tables, indexes, `pgcrypto`/`pgvector` extensions, `current_app_user_id()`, `current_professional_id()`, `is_verified_professional()`, and all baseline RLS policies |
+| `0001_init.sql` | Full initial schema: all 12 tables, indexes, `pgcrypto`/`pgvector` extensions, `current_app_user_id()`, `current_professional_id()`, `is_verified_professional()`, and all baseline RLS policies |
 | `0002_allow_group_creation.sql` | Adds `INSERT`, `UPDATE`, and `DELETE` policies on `groups` for authenticated users |
 | `0003_allow_session_creation.sql` | Adds `INSERT` policy on `sessions` for authenticated users |
 | `0004_fix_session_rls_recursion.sql` | Introduces `is_participant_in_session()` and `is_professional_for_session()` SECURITY DEFINER functions; rewrites `sessions` and `session_participants` policies to eliminate circular RLS recursion |
