@@ -1,0 +1,180 @@
+---
+title: "LiveKit: real-time video and recording"
+sidebarTitle: "LiveKit"
+description: "How Sahara uses LiveKit WebRTC rooms to deliver real-time audio and video for peer support sessions, including token generation and the session start flow."
+---
+
+LiveKit provides the real-time WebRTC infrastructure for every Sahara peer support session: participants join a shared audio/video room, and LiveKit handles signalling, media routing, and per-participant recording. Each session maps 1-to-1 with a LiveKit room named `session-<sessionId>`, where `sessionId` is a UUID from the Postgres `sessions` table.
+
+## Server-side functions
+
+All server-side LiveKit logic lives in `lib/livekit/server.ts` and is re-exported from `lib/livekit/index.ts`. The functions are called exclusively from API routes — never from Client Components.
+
+### `getLiveKitCredentials()`
+
+Reads the three required environment variables and throws a descriptive error if any are absent:
+
+```typescript
+export function getLiveKitCredentials() {
+  const apiKey = process.env.LIVEKIT_API_KEY;
+  const apiSecret = process.env.LIVEKIT_API_SECRET;
+  const url = process.env.LIVEKIT_URL;
+
+  if (!apiKey || !apiSecret || !url) {
+    throw new Error(
+      'LiveKit credentials not configured. Set LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL'
+    );
+  }
+
+  return { apiKey, apiSecret, url };
+}
+```
+
+### `createRoomServiceClient()`
+
+Instantiates a `RoomServiceClient` from `livekit-server-sdk` using the credentials returned by `getLiveKitCredentials()`:
+
+```typescript
+export function createRoomServiceClient() {
+  const { apiKey, apiSecret, url } = getLiveKitCredentials();
+  return new RoomServiceClient(url, apiKey, apiSecret);
+}
+```
+
+### `createLiveKitRoom(roomName)`
+
+Creates a LiveKit room. The call is idempotent — if the server returns an error message containing `"room already exists"` or `"duplicate"`, the error is silently swallowed so that multiple participants joining the same session do not cause a failure:
+
+```typescript
+export async function createLiveKitRoom(roomName: string) {
+  const roomService = createRoomServiceClient();
+
+  try {
+    await roomService.createRoom({ name: roomName });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes('room already exists') || message.includes('duplicate')) {
+      return;
+    }
+    throw error;
+  }
+}
+```
+
+### `generateParticipantToken()`
+
+Issues a signed JWT that the client presents to the LiveKit server when joining a room. The grant embeds `roomJoin: true`, `canPublishData: true`, and the caller-supplied `canPublish` / `canSubscribe` flags:
+
+```typescript
+export async function generateParticipantToken(
+  userId: string,
+  userName: string,
+  roomName: string,
+  canPublish: boolean = true,
+  canSubscribe: boolean = true
+): Promise<string> {
+  const { apiKey, apiSecret } = getLiveKitCredentials();
+
+  const token = new AccessToken(apiKey, apiSecret, {
+    identity: userId,
+    name: userName,
+  });
+
+  token.addGrant({
+    room: roomName,
+    roomJoin: true,
+    canPublish,
+    canSubscribe,
+    canPublishData: true,
+  });
+
+  return token.toJwt();
+}
+```
+
+The `identity` field is set to the Supabase `user.id` UUID, which is how Sahara correlates LiveKit participants with database records while preserving anonymity in the room (the displayed `name` is the user's chosen display name, not a real identity).
+
+### `deleteRoom()` and `getRoomParticipants()`
+
+```typescript
+export async function deleteRoom(roomName: string) {
+  const roomService = createRoomServiceClient();
+  await roomService.deleteRoom(roomName);
+}
+
+export async function getRoomParticipants(roomName: string) {
+  const roomService = createRoomServiceClient();
+  return roomService.listParticipants(roomName);
+}
+```
+
+`deleteRoom` is called when a session ends. `getRoomParticipants` can be used to check liveness before closing a session.
+
+## Client-side integration
+
+The browser-side implementation wraps `livekit-client` in a typed `LiveKitClient` class (`lib/livekit/client.ts`) that surfaces domain-specific events:
+
+```typescript
+export interface LiveKitClientEvents {
+  onConnected: () => void;
+  onDisconnected: () => void;
+  onParticipantConnected: (participant: SessionParticipant) => void;
+  onParticipantDisconnected: (participantId: string) => void;
+  onLocalTrackPublished: (track: LocalAudioTrack) => void;
+  onLocalTrackUnpublished: (track: LocalAudioTrack) => void;
+  onRemoteTrackSubscribed: (track: Track, participant: SessionParticipant) => void;
+  onRemoteTrackUnsubscribed: (track: Track, participant: SessionParticipant) => void;
+  onConnectionQualityChanged: (quality: ConnectionQuality) => void;
+  onError: (error: Error) => void;
+}
+```
+
+The `Room` is constructed with `adaptiveStream: true` and `dynacast: true` for automatic bitrate and layer optimisation. React UI components are provided by `@livekit/components-react`, which consumes the room instance directly.
+
+## Session start flow
+
+<Steps>
+  <Step title="Client sends POST /api/sessions/start">
+    The browser POSTs to `/api/sessions/start?groupId=<groupId>`. The route handler calls `requireUser()` to authenticate the caller, then looks up the group and checks whether an active session already exists for it.
+  </Step>
+  <Step title="Server creates room and participant record">
+    If no active session exists, the server inserts a row into `sessions`, inserts the caller into `session_participants`, and calls `createLiveKitRoom(`session-${sessionId}`)`. If a session already exists, the caller is simply added as a new participant.
+  </Step>
+  <Step title="Server generates and returns a token">
+    `generateParticipantToken(user.id, user.display_name, roomName, true, true)` produces a signed JWT. The response body contains `sessionId`, `livekit.token`, `livekit.roomName`, and `livekit.url`.
+
+    ```json
+    {
+      "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+      "livekit": {
+        "token": "<signed-jwt>",
+        "roomName": "session-550e8400-e29b-41d4-a716-446655440000",
+        "url": "wss://your-livekit-host.livekit.cloud"
+      },
+      "group": {
+        "id": "...",
+        "topic": "Anxiety & stress",
+        "sessionType": "peer"
+      }
+    }
+    ```
+  </Step>
+  <Step title="Client joins the LiveKit room">
+    The browser calls `liveKitClient.connect(livekit.url, livekit.token)`, which opens a WebRTC connection to the LiveKit server. Microphone and camera tracks are published once the user grants permission.
+  </Step>
+  <Step title="Session ends">
+    A POST to `/api/sessions/end` stops any active recordings, marks the session row with `ended_at`, and calls `deleteRoom(roomName)` to release LiveKit resources.
+  </Step>
+</Steps>
+
+## Environment variables
+
+| Variable | Purpose |
+|---|---|
+| `LIVEKIT_API_KEY` | API key for signing tokens and calling the room service API |
+| `LIVEKIT_API_SECRET` | Secret used with `AccessToken` for JWT signing |
+| `LIVEKIT_URL` | WebSocket URL of your LiveKit server (e.g. `wss://your-project.livekit.cloud`) |
+
+<Note>
+  LiveKit credentials must be present even in local development. `getLiveKitCredentials()` is called synchronously during session start and throws immediately if any variable is missing, returning an HTTP 503 to the client. The LiveKit CLI or a self-hosted server can be used for local testing — see the [LiveKit docs](https://docs.livekit.io/home/self-hosting/local/) for setup instructions.
+</Note>

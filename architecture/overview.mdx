@@ -1,0 +1,96 @@
+---
+title: "Sahara architecture and request flow"
+sidebarTitle: "Overview"
+description: "A layered walkthrough of Sahara's Next.js App Router frontend, Supabase backend, LiveKit video infrastructure, and Groq/OpenRouter AI pipeline."
+---
+
+Sahara is built as a layered, security-first platform that keeps every concern — authentication, data storage, real-time video, and AI analysis — in a discrete, independently replaceable layer. The Next.js 16 App Router serves as the spine: Server Components handle data fetching and auth checks by default, while Client Components are added only where browser interactivity is genuinely required. Supabase provides auth, Postgres with Row Level Security, and file storage. LiveKit manages WebRTC rooms and per-participant audio capture. Groq and OpenRouter handle post-session transcription and AI wellbeing analysis respectively.
+
+## Tech stack
+
+| Layer | Technology | Purpose |
+| --- | --- | --- |
+| Frontend | Next.js 16 App Router + TypeScript + Tailwind CSS | Server Components by default, Client Components only for interactivity |
+| Auth | Supabase Auth (email/password + Google OAuth) | JWT-based sessions, OAuth callback at `/auth/callback` |
+| Database | Supabase Postgres + RLS | All user data, RLS enforced on every table |
+| File Storage | Supabase Storage | Per-participant audio recordings in the `audio-recordings` bucket |
+| Real-time video | LiveKit | Room management, per-participant recording, WebRTC |
+| Speech-to-Text | Groq Whisper (`whisper-large-v3`) | Post-session transcription via Groq Cloud API |
+| AI Analysis | OpenRouter LLM (`nvidia/nemotron-3-ultra-550b-a55b:free`) | Wellbeing trend analysis with history context |
+| Testing | Playwright | E2E auth flows, RLS boundary tests, session state transitions |
+
+## Request flow
+
+The happy path for a user joining a session and receiving an AI analysis unfolds in these stages:
+
+<Steps>
+  <Step title="Authentication">
+    The user signs in via email/password or Google OAuth. Google OAuth completes a server-side code exchange at `/auth/callback`, which sets a session cookie. All subsequent Server Component renders read that cookie via `createServerClientInstance()` in `lib/supabase/server.ts`.
+  </Step>
+  <Step title="Group discovery">
+    The user browses available groups. The `groups` table is readable by any authenticated user (RLS policy: `auth.uid() is not null`), so groups load without elevated privileges.
+  </Step>
+  <Step title="Session join">
+    The user selects a group and joins a session. An API route creates a `sessions` row and a `session_participants` row for the user. The LiveKit token generation endpoint returns a short-lived JWT scoped to the room. The browser establishes a WebRTC connection to LiveKit.
+  </Step>
+  <Step title="Audio recording">
+    LiveKit captures a per-participant audio track for the duration of the session. When the session ends, the audio file is uploaded to the `audio-recordings` Supabase Storage bucket, and the resulting public URL is written back to `session_participants.audio_recording_url`.
+  </Step>
+  <Step title="Post-session transcription">
+    A server-side job downloads the audio file and sends it to the Groq Whisper API (`whisper-large-v3`). The resulting text is written to both `session_participants.transcript` and a new `transcripts` row via the service-role client — bypassing RLS because the job acts on behalf of the system, not the user.
+  </Step>
+  <Step title="AI analysis">
+    The analysis job fetches the user's transcript history and any `journal_entries` where `include_in_analysis = true`, then sends the bundle to OpenRouter. The LLM returns a `summary` and a `trend` value (`improving`, `stable`, or `declining`). The result is stored in `ai_analyses`.
+  </Step>
+  <Step title="Progress display">
+    On the user's next dashboard load, a Server Component queries `ai_analyses` with the RLS-restricted `createServerClientInstance()`. Only the rows belonging to the authenticated user are returned, and the trend visualization is rendered server-side.
+  </Step>
+</Steps>
+
+<Note>
+  Session escalation follows a parallel path: if the AI detects a declining trend or the user explicitly requests help, a `helpline_requests` row is created. Platform staff update the `status` field (`pending` → `contacted` → `resolved`) via a service-role tool — no client-facing update policy exists for `helpline_requests`.
+</Note>
+
+## Directory structure
+
+```
+app/
+  (auth)/              # Auth pages (login, signup, professional flows)
+  (user)/              # User-facing pages (dashboard, sessions, journal, etc.)
+  (professional)/      # Professional/counselor pages
+  api/                 # API routes (sessions, transcription, analysis, etc.)
+  auth/                # OAuth callback, logout routes
+  page.tsx             # Root landing page
+lib/
+  supabase/            # Supabase client (server + browser)
+  auth/                # Auth helpers (getCurrentUser, requireUser, etc.)
+  livekit/             # LiveKit integration (token generation, room management)
+  ai/                  # AI modules (STT, analysis, embeddings)
+components/            # Reusable UI components
+types/                 # TypeScript types (db.ts, session.ts)
+supabase/
+  migrations/          # Database migrations (0001_init.sql → 0013_...)
+  config.toml          # Supabase local dev configuration
+tests/                 # Playwright tests
+```
+
+<Tip>
+  Route groups — the `(auth)`, `(user)`, and `(professional)` folders — keep segment-specific layouts and middleware isolated without affecting the URL structure.
+</Tip>
+
+## Explore further
+
+<CardGroup cols={2}>
+  <Card title="Database" icon="database" href="/architecture/database">
+    Schema tables, helper functions, TypeScript types, and migration history.
+  </Card>
+  <Card title="Security" icon="lock" href="/architecture/security">
+    RLS policies, service-role boundaries, and auth flow details.
+  </Card>
+  <Card title="LiveKit integration" icon="video" href="/integrations/livekit">
+    Room creation, token generation, and per-participant recording.
+  </Card>
+  <Card title="AI integration" icon="sparkles" href="/integrations/ai">
+    Whisper transcription pipeline and OpenRouter analysis prompts.
+  </Card>
+</CardGroup>

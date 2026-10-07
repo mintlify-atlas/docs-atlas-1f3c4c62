@@ -1,0 +1,100 @@
+---
+title: "Transcribe API — audio-to-text via Groq Whisper"
+sidebarTitle: "Transcribe"
+description: "Download a stored audio recording from Supabase Storage and convert it to text using Groq's Whisper large-v3 model, then persist the transcript."
+---
+
+The Transcribe endpoint downloads an audio recording from Supabase Storage and runs it through the Groq Whisper API (`whisper-large-v3`) to produce a full text transcript. The resulting transcript is written back to the `recordings.transcript` column and returned in the response, making it available for downstream AI analysis via [POST /api/analyze](/api/analyze).
+
+---
+
+## POST /api/transcribe
+
+<span style={{display:"inline-block",background:"#16a34a",color:"#fff",borderRadius:"4px",padding:"2px 8px",fontWeight:700,fontSize:"0.8rem",marginBottom:"1rem"}}>POST</span> `/api/transcribe`
+
+Transcribes the audio file associated with a recording row.
+
+**Auth:** requires an active user session.
+
+### Request body
+
+<ParamField body="recordingId" type="string" required>
+  UUID of the row in the `recordings` table. The row must exist and its `file_url` must be a reachable URL pointing to the audio file in Supabase Storage.
+</ParamField>
+
+### Behavior
+
+1. Looks up the recording row by `recordingId`, selecting `id`, `file_url`, and `file_name`.
+2. Downloads the audio file from `file_url` using a standard HTTP `GET` request.
+3. Wraps the audio bytes in a `FormData` object and submits them to `https://api.groq.com/openai/v1/audio/transcriptions` with:
+   - `model`: `whisper-large-v3`
+   - `language`: `en`
+   - `file`: the audio blob, named using `file_name` (or `recording.webm` as a fallback)
+   - MIME type preserved from the `Content-Type` header of the download response (falls back to `audio/webm`)
+4. Saves the returned transcript text to `recordings.transcript` via an `UPDATE` query.
+5. Returns the transcript text in the response body.
+
+<Note>
+  The `GROQ_API_KEY` environment variable must be set on your server. If it is missing, the endpoint throws immediately with a `500` before any network calls are made.
+</Note>
+
+### Response `200`
+
+<ResponseField name="success" type="boolean">
+  Always `true` on a successful transcription.
+</ResponseField>
+
+<ResponseField name="transcript" type="string">
+  The full text transcript returned by the Groq Whisper API. Language is English (`en`).
+</ResponseField>
+
+### Errors
+
+| Status | Condition |
+|---|---|
+| `400` | `recordingId` is missing from the request body |
+| `401` | No authenticated user session |
+| `404` | No recording with the given `recordingId` exists in the `recordings` table |
+| `500` | Audio file download failed; Groq API returned a non-OK status; transcript save to database failed; or `GROQ_API_KEY` is not configured |
+
+<Warning>
+  If the Groq API returns an empty transcript (e.g. for a silent recording), the `transcript` field in the response may be an empty string and the update will still be persisted. Validate the transcript length on the client before triggering downstream analysis.
+</Warning>
+
+---
+
+## Example
+
+### Transcribe a recording
+
+```bash
+curl -X POST https://your-sahara-app.vercel.app/api/transcribe \
+  -H "Content-Type: application/json" \
+  -H "Cookie: <SESSION_COOKIE>" \
+  -d '{
+    "recordingId": "c7f2a891-dead-beef-cafe-123456789abc"
+  }'
+```
+
+```json
+{
+  "success": true,
+  "transcript": "Today I wanted to talk about how work stress has been affecting my sleep. I've been feeling overwhelmed with deadlines and I'm not sure how to set better boundaries with my manager..."
+}
+```
+
+### Error response — recording not found
+
+```json
+{
+  "error": "Recording not found"
+}
+```
+
+### Error response — Groq API failure
+
+```json
+{
+  "error": "Groq API error: 401 - {\"error\":{\"message\":\"Invalid API key\"}}"
+}
+```

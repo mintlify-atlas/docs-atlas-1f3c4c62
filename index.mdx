@@ -1,20 +1,62 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "Sahara: Anonymous Peer Support Platform"
+sidebarTitle: "Home"
+description: "Sahara connects people through anonymous video and text group sessions, with AI-powered transcription and wellbeing trend analysis after every session."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+Sahara is an anonymous peer-support platform built on Next.js, Supabase, and LiveKit. Users join topic-based group sessions, speak freely under full identity protection, and receive AI-generated wellbeing trend insights drawn from their session history and private journal — with a direct escalation path to verified counselors when needed.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Introduction" icon="book-open" href="/introduction">
+    Learn what Sahara is, who it is for, and how the core loop works from session to insight.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Stand up a local Sahara instance in minutes with environment variables and a running dev server.
+  </Card>
+  <Card title="Core Features" icon="sparkles" href="/features/sessions">
+    Explore sessions, journaling, progress tracking, and the helpline escalation flow.
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Browse every REST endpoint — groups, sessions, journal, transcription, and AI analysis.
+  </Card>
+</CardGroup>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+## How Sahara Works
+
+<Steps>
+  <Step title="Join or create a session">
+    Users browse topic-based support groups and join a live video or text session. Three session types are supported: peer-only, peer + counselor, and one-on-one with a counselor.
+  </Step>
+  <Step title="Talk freely — audio is captured">
+    LiveKit handles real-time video and per-participant audio recording. Identity is anonymized throughout; no personally identifiable information is exposed to other participants.
+  </Step>
+  <Step title="Post-session transcription">
+    After the session ends, audio recordings are automatically transcribed using Groq Whisper (`whisper-large-v3`). Transcripts are stored privately under the participant's account.
+  </Step>
+  <Step title="AI wellbeing analysis">
+    An LLM analyses the transcript alongside the user's previous session history and opted-in journal entries, producing a summary, trend (`improving` / `stable` / `declining`), and key themes.
+  </Step>
+</Steps>
+
+## Key Capabilities
+
+<CardGroup cols={3}>
+  <Card title="Anonymous Sessions" icon="user-secret">
+    Row-level security and identity anonymization protect every participant across all session types.
+  </Card>
+  <Card title="AI Trend Analysis" icon="brain">
+    History-aware analysis tracks wellbeing over time and surfaces themes like anxiety, work stress, or coping strategies.
+  </Card>
+  <Card title="Private Journal" icon="book">
+    A personal journal that can optionally feed the AI analysis context for richer, more accurate insights.
+  </Card>
+  <Card title="Professional Escalation" icon="user-doctor">
+    Users can request a helpline connection at any time, routing them to a verified counselor.
+  </Card>
+  <Card title="Progress Tracking" icon="chart-line">
+    Visual progress dashboard shows trend history and AI-authored or professional-authored progress notes.
+  </Card>
+  <Card title="Secure by Default" icon="shield-halved">
+    RLS enforced on every Supabase table. Service-role keys never reach the client. Transcripts are never logged.
+  </Card>
+</CardGroup>

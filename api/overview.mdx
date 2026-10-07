@@ -1,0 +1,79 @@
+---
+title: "Sahara REST API overview and base URL"
+sidebarTitle: "Overview"
+description: "Explore every HTTP endpoint Sahara exposes via its Next.js App Router, plus base URL, auth requirements, and a full endpoint index."
+---
+
+Sahara exposes a set of HTTP endpoints under `app/api/` that are consumed exclusively by its own Next.js frontend. Every endpoint is a Next.js App Router Route Handler; all routes guard access by calling `requireUser()` or `requireProfessional()` server-side, so a valid Supabase session must be present on every request before any business logic runs.
+
+## Base URL
+
+| Environment | Base URL |
+|---|---|
+| Development | `http://localhost:3000` |
+| Production | Value of `NEXT_PUBLIC_APP_URL` |
+
+Set `NEXT_PUBLIC_APP_URL` in your production environment to the canonical origin of your deployment (e.g. `https://sahara.example.com`). All relative paths below are appended to this base.
+
+## Authentication
+
+Every route handler calls either `requireUser()` or `requireProfessional()` before touching the database. These helpers read the Supabase session from the incoming request cookie store — no separate API key is needed.
+
+When making requests from a browser the session cookie is included automatically. For server-to-server or OAuth flows, include the `Authorization: Bearer <access_token>` header if you are constructing requests outside a browser context.
+
+<Note>
+  Sahara does not issue API keys. All authentication is delegated to Supabase Auth. See the [Authentication](/api/authentication) page for full details on session setup and role guards.
+</Note>
+
+## Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/groups` | Create a new support group |
+| `GET` | `/api/groups` | List all available groups |
+| `GET` | `/api/groups/[groupId]` | Get a specific group by ID |
+| `POST` | `/api/sessions/start?groupId=` | Start or join a session; returns a LiveKit room token |
+| `POST` | `/api/sessions/end` | End an active session |
+| `POST` | `/api/sessions/recording` | Save a session audio recording URL |
+| `POST` | `/api/journal` | Create a new journal entry |
+| `PATCH` | `/api/journal` | Update the `include_in_analysis` flag on an entry |
+| `DELETE` | `/api/journal?id=` | Delete a journal entry by ID |
+| `POST` | `/api/transcribe` | Transcribe an audio recording via Groq Whisper |
+| `POST` | `/api/analyze` | Run AI wellbeing analysis on a session or recording transcript |
+
+## Error Responses
+
+All error responses share a consistent JSON shape:
+
+```json
+{ "error": "Human-readable error message" }
+```
+
+| Status | Meaning |
+|---|---|
+| `400` | Bad input — a required field is missing or a value is invalid |
+| `401` | Unauthenticated — no active session was found |
+| `403` | Forbidden — the user lacks the required role or verification status |
+| `404` | Not found — the requested resource does not exist |
+| `500` | Internal server error — an unexpected error occurred |
+
+<Tip>
+  When debugging, check the `error` string in the response body first. Route handlers such as `/api/sessions/start` also include a `logs` array in the response to help trace exactly which step failed.
+</Tip>
+
+## Explore by Resource
+
+<CardGroup cols={2}>
+  <Card title="Groups" icon="users" href="/api/groups">
+    Create and list peer support groups, including session type validation.
+  </Card>
+  <Card title="Sessions" icon="video" href="/api/sessions">
+    Start or join LiveKit-powered sessions and manage recordings.
+  </Card>
+  <Card title="Journal" icon="book-open" href="/api/journal">
+    Create, update, and delete private journal entries tied to a user.
+  </Card>
+  <Card title="Analyze" icon="brain" href="/api/analyze">
+    Run AI wellbeing analysis against a session or recording transcript.
+  </Card>
+</CardGroup>

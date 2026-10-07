@@ -1,0 +1,118 @@
+---
+title: "Progress Tracking and Wellbeing Trends"
+sidebarTitle: "Progress"
+description: "Aggregate AI analyses, session transcripts, and journal entries into a longitudinal wellbeing dashboard with trend and theme visualisation."
+---
+
+The progress dashboard at `/progress` gives users a longitudinal view of their mental wellbeing by aggregating every AI analysis ever run on their data. The page fetches all rows from `ai_analyses` and all transcribed content from `session_participants`, uploaded `recordings`, and opted-in `journal_entries` for the authenticated user, then surfaces key statistics, a trend timeline, a trend distribution chart, and the most frequently surfaced themes across analyses.
+
+## Trend values
+
+Every `ai_analyses` row carries a `trend` field typed as the `Trend` union:
+
+```typescript
+export type Trend = 'improving' | 'stable' | 'declining';
+```
+
+| Trend | Meaning |
+|-------|---------|
+| `improving` | The AI detected positive momentum — the user is coping better, expressing hope, or describing constructive change compared to prior context |
+| `stable` | The user's emotional state appears consistent; neither clearly worsening nor improving |
+| `declining` | The AI detected negative indicators — increased distress, worsening symptoms, or a retreat from earlier progress |
+
+The trend is determined entirely by the LLM based on the session transcript and any opted-in journal entries in the context window. It is stored verbatim in `ai_analyses.trend` and never overridden by the application layer.
+
+## Data sources
+
+The progress page pulls from three separate tables to build a unified transcript history:
+
+<CardGroup cols={2}>
+  <Card title="ai_analyses" icon="sparkles">
+    Auto-generated after each analysis run. Contains `summary` (plain-text narrative), `trend` (`improving | stable | declining`), and a `session_id` reference. The `summary` field is also mined for recurring theme keywords to populate the **Recurring Themes** panel.
+  </Card>
+  <Card title="session_participants" icon="video">
+    Each participant row may carry a `transcript` column populated by the in-browser speech recognition hook. Rows with a non-null transcript are surfaced in the **Transcript History** list with `source: 'session'`.
+  </Card>
+  <Card title="recordings" icon="microphone">
+    Manually uploaded audio files (stored in the `recordings` table). Rows with a non-null `transcript` are included with `source: 'upload'`.
+  </Card>
+  <Card title="journal_entries" icon="book-open">
+    Entries where `include_in_analysis = true` are fetched and displayed with `source: 'journal'`. These entries are also passed to the LLM as context when analysis is triggered.
+  </Card>
+</CardGroup>
+
+The three transcript sources are merged and sorted by `created_at` descending before rendering, giving a single unified history regardless of where the content originated.
+
+### `ai_analyses` table schema
+
+```typescript
+export interface AIAnalysis {
+  id: string;
+  user_id: string;
+  session_id: string | null; // null for recording-based analyses
+  summary: string;
+  trend: Trend;
+  created_at: string;
+}
+```
+
+### `progress_notes` table schema
+
+Progress notes are authored annotations attached to a user's record. They are not shown on the current `/progress` page UI, but are stored in the database for professional and AI tooling:
+
+```typescript
+export type ProgressNoteAuthor = 'ai' | 'professional';
+
+export interface ProgressNote {
+  id: string;
+  user_id: string;
+  author: ProgressNoteAuthor;
+  professional_id: string | null; // set when author === 'professional'
+  note: string;
+  created_at: string;
+}
+```
+
+Notes authored by `'professional'` are written by a verified counselor who has an active relationship with the user. Notes authored by `'ai'` are generated programmatically. Neither type is writable by the user themselves.
+
+## How analysis is triggered
+
+Analysis is not automatic. A user must navigate to the post-session analyze page:
+
+```
+/sessions/<sessionId>/analyze
+```
+
+The page checks for an existing `ai_analyses` row for that `(sessionId, userId)` pair. If none exists and a transcript is available, a **Analyze with AI** button is shown. Clicking it calls:
+
+```
+POST /api/analyze
+Content-Type: application/json
+
+{ "sessionId": "<uuid>" }
+```
+
+The `/api/analyze` route fetches the user's transcript history (sessions, uploads, and opted-in journal entries), constructs an LLM prompt, and writes the result as a new row in `ai_analyses` containing `summary`, `trend`, and extracted themes. The response is returned to the client immediately and displayed on the page.
+
+## Themes
+
+The LLM is instructed to extract 2–5 key topics from the combined transcript context per analysis run. Representative examples include labels such as `anxiety`, `work stress`, `coping strategies`, `grief`, and `self-compassion`. Themes are embedded in the `summary` text and parsed client-side on the progress page using a regex heuristic to populate the **Recurring Themes** panel. Theme counts across all analyses are aggregated and the top 8 are displayed, with a frequency count shown for themes that appear more than once.
+
+## Dashboard view
+
+When a user visits `/progress`, the page server-renders the following sections:
+
+| Section | Description |
+|---------|-------------|
+| **Stats row** | Four counters: total transcripts, total words analysed, number of AI analyses run, and the current (most recent) trend value |
+| **Latest Analysis** | Full `summary` text and trend badge from the most recent `ai_analyses` row |
+| **Trend Timeline** | Vertical timeline of all past analyses, colour-coded by trend (`emerald` = improving, `amber` = stable, `red` = declining) |
+| **Transcript History** | Paginated list of every transcript with source badge, word count, and date |
+| **Trend Distribution** | Horizontal bar chart showing the percentage breakdown across `improving`, `stable`, and `declining` across all analyses |
+| **Recurring Themes** | Tag cloud of the top 8 extracted theme labels, with appearance counts |
+
+All data is scoped to the authenticated user via `getCurrentUser()` and fetched with the service-role Supabase client, bypassing RLS for read efficiency while the user's own identity remains the filter key.
+
+<Note>
+  AI analyses are generated for self-reflection purposes and do not constitute medical advice. This disclaimer is rendered at the bottom of both the `/progress` page and the individual session analyze page.
+</Note>

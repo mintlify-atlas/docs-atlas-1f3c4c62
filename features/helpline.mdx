@@ -1,0 +1,88 @@
+---
+title: "Helpline: Escalate to a Human Professional"
+sidebarTitle: "Helpline"
+description: "Submit a counselor request directly from the app. Sahara staff review pending requests and reach out privately to users who need human support."
+---
+
+The helpline feature gives users in distress a direct, in-app path to human support. By visiting `/helpline` and submitting a request, a user inserts a row into the `helpline_requests` table with `status: 'pending'`. Sahara staff are notified through their own tooling and can update the status as they work the request. The feature is intentionally minimal on the user side — there are no webhooks or polling loops exposed to the client; the user simply submits once and waits to be contacted.
+
+## Request status lifecycle
+
+A helpline request moves through three states from creation to resolution:
+
+<Steps>
+  <Step title="pending">
+    The initial state set at insert time. The request has been received and is awaiting a staff member to pick it up. The user sees a confirmation message: *"A counselor will contact you soon."*
+  </Step>
+  <Step title="contacted">
+    A staff member has reviewed the request and reached out to the user through an out-of-band channel (email, phone, or platform message). This transition is performed by staff tooling using the Supabase service-role key — it is not accessible through any public API endpoint.
+  </Step>
+  <Step title="resolved">
+    The case has been closed. The counselor considers the matter addressed or the user is no longer in immediate need. Again, this is set by staff tooling, not by the user.
+  </Step>
+</Steps>
+
+The full type definition from `types/db.ts`:
+
+```typescript
+export type HelplineStatus = 'pending' | 'contacted' | 'resolved';
+
+export interface HelplineRequest {
+  id: string;
+  user_id: string;
+  status: HelplineStatus;
+  created_at: string;
+}
+```
+
+## How to trigger a helpline request
+
+The user visits `/helpline` and clicks **Request a counselor**. The page calls the Supabase client directly — there is no intermediate API route:
+
+```typescript
+const { error } = await supabase
+  .from('helpline_requests')
+  .insert({ user_id: user.id, status: 'pending' });
+```
+
+The insert uses the authenticated browser client (`@/lib/supabase/client`), so the `user_id` is derived from the active Supabase session. If the insert succeeds, the UI transitions to a confirmation state. If it fails (e.g. the user is unauthenticated), an error message is displayed inline.
+
+The `/helpline` page also optionally accepts a short text message from the user to describe what they are going through. This message is currently surfaced to the user as a textarea prompt labelled *"Briefly describe what you're going through (optional)"* and is intended to help the counselor prepare before making contact. At the time of writing, this message text is held only in React state and is not persisted to the database; the insert only writes `user_id` and `status`.
+
+## RLS policy and data access
+
+The `helpline_requests` table is protected by a Row Level Security policy that restricts read access to the submitting user only:
+
+> Users can `SELECT` their own helpline requests where `user_id` matches the result of `current_app_user_id()`.
+
+This means:
+- A user can check the current status of their own requests.
+- No other user — including other authenticated users — can read or enumerate requests.
+- Status transitions (`pending → contacted → resolved`) are performed exclusively by back-office tooling that authenticates with the Supabase **service-role** key, which bypasses RLS. There is no public-facing `PATCH /api/helpline` endpoint.
+
+<Warning>
+  Sahara is **not a crisis hotline**. The helpline feature connects users with Sahara's own support staff on a best-effort basis and carries no guaranteed response time. If you or someone you know is in **immediate danger**, contact local emergency services right away. The `/helpline` page prominently displays an emergency call button and lists 24/7 crisis resources.
+</Warning>
+
+## In-app emergency resources
+
+In addition to the counselor request form, the `/helpline` page renders:
+
+<CardGroup cols={2}>
+  <Card title="Emergency banner" icon="phone">
+    A high-visibility dark panel at the top of the page with a direct `tel:` link to emergency services (100) for users in immediate danger.
+  </Card>
+  <Card title="Crisis hotlines" icon="life-ring">
+    A list of 24/7 resources including the Suicide & Crisis Lifeline, Crisis Text Line, and SAMHSA Helpline — each rendered as a tappable row with a direct dial link.
+  </Card>
+  <Card title="While you wait tips" icon="heart">
+    A grounding checklist shown below the request form: breathing exercises, reaching out to a trusted person, and affirmations designed to help users stay calm while they wait for staff contact.
+  </Card>
+  <Card title="Counselor request form" icon="user-check">
+    The primary CTA. Submits a `helpline_requests` insert and shows a confirmation state on success. Disabled while a request is being sent to prevent duplicate submissions.
+  </Card>
+</CardGroup>
+
+<Note>
+  Status transitions from `pending` to `contacted` or `resolved` are handled entirely server-side by Sahara's staff tooling. There is no public API endpoint for updating a helpline request's status, and no client-side code in the app performs this operation.
+</Note>

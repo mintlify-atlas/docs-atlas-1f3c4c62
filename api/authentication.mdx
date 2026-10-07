@@ -1,0 +1,154 @@
+---
+title: "Authenticate requests to the Sahara API"
+sidebarTitle: "Authentication"
+description: "Learn how Supabase Auth session cookies, Google OAuth callbacks, and server-side role guards protect every Sahara API route handler."
+---
+
+Sahara's API relies entirely on Supabase Auth session cookies — no API key or custom token scheme is required. Authentication is handled transparently by the Next.js middleware and the `@supabase/ssr` cookie helpers; once a user signs in, every subsequent request to an `app/api/` route carries the session automatically.
+
+## Auth Methods
+
+<Tabs>
+  <Tab title="Email / Password">
+    Users create an account or sign in at the `/signup` and `/login` pages respectively. On successful authentication Supabase sets a `sb-<project-ref>-auth-token` cookie in the browser.
+
+    All subsequent requests to any `app/api/` route handler include this cookie automatically — no additional configuration is needed on the client side.
+
+    **Flow summary**
+
+    1. User submits credentials at `/login` or `/signup`.
+    2. Supabase Auth validates credentials and issues a session.
+    3. The `@supabase/ssr` helper writes the `sb-<project-ref>-auth-token` cookie to the response.
+    4. The browser includes the cookie on all same-origin API requests.
+    5. Route handlers call `requireUser()` or `requireProfessional()`, which read the cookie via `createServerClientInstance()`.
+
+    <Note>
+      The cookie name contains your Supabase project reference (`sb-<project-ref>-auth-token`). You can find your project reference in the Supabase dashboard under **Project Settings → General**.
+    </Note>
+  </Tab>
+  <Tab title="Google OAuth">
+    Users click **Sign in with Google** on the login page. Supabase initiates the OAuth flow and, after Google grants access, redirects back to `/auth/callback`.
+
+    The callback route handler (`app/auth/callback/route.ts`) exchanges the one-time `code` query parameter for a Supabase session, sets the session cookies, and redirects the user to their intended destination (defaults to `/dashboard`).
+
+    **Flow summary**
+
+    1. User clicks **Sign in with Google** → Supabase redirects to Google's consent screen.
+    2. Google redirects back to `<YOUR_SUPABASE_URL>/auth/v1/callback` with an authorization code.
+    3. Supabase exchanges the code for tokens and redirects to `/auth/callback?code=<code>`.
+    4. The callback handler calls `supabase.auth.exchangeCodeForSession(code)`.
+    5. If the authenticated user has no row in the `users` table yet, one is created automatically using the display name from `user_metadata`.
+    6. Session cookies are set and the user is redirected to their destination.
+
+    **Google Cloud Console redirect URI**
+
+    Add the following URI to the **Authorized redirect URIs** list in your Google Cloud Console OAuth 2.0 client:
+
+    ```
+    <YOUR_SUPABASE_URL>/auth/v1/callback
+    ```
+
+    Replace `<YOUR_SUPABASE_URL>` with the value of `NEXT_PUBLIC_SUPABASE_URL` from your environment (e.g. `https://abcdefgh.supabase.co`).
+
+    <Tip>
+      The `redirectTo` (or `next`) query parameter on the callback URL lets you send users to a specific page after sign-in. For example: `/auth/callback?code=…&redirectTo=/dashboard`.
+    </Tip>
+  </Tab>
+</Tabs>
+
+## Server-Side Auth Helpers
+
+All route handlers import their guards from `lib/auth/helpers.ts`. The two primary guards are shown below — these are the exact signatures from the source:
+
+```typescript
+// lib/auth/helpers.ts
+
+export async function requireUser(): Promise<User> {
+  const user = await getCurrentUser();
+  if (!user) {
+    throw new Error('Unauthorized: User not authenticated');
+  }
+  return user;
+}
+
+export async function requireProfessional(): Promise<Professional> {
+  const professional = await getCurrentProfessional();
+  if (!professional) {
+    throw new Error('Unauthorized: Professional not authenticated');
+  }
+  if (!professional.verified) {
+    throw new Error('Forbidden: Professional not verified');
+  }
+  return professional;
+}
+```
+
+Both helpers internally call `createServerClientInstance()` from `lib/supabase/server.ts`, which reads the session from the Next.js cookie store via `@supabase/ssr`:
+
+```typescript
+// lib/supabase/server.ts (abridged)
+
+export async function createServerClientInstance() {
+  const cookieStore = await cookies();
+
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        get(name: string) {
+          return cookieStore.get(name)?.value;
+        },
+        // ...set and remove omitted for brevity
+      },
+    }
+  );
+}
+```
+
+### Helper behaviour at a glance
+
+| Helper | Checks | Throws on failure |
+|---|---|---|
+| `requireUser()` | Valid Supabase session → `users` row exists | `Error('Unauthorized: User not authenticated')` |
+| `requireProfessional()` | Valid session → `professionals` row exists **and** `verified === true` | `Error('Unauthorized: …')` or `Error('Forbidden: …')` |
+
+## User Roles
+
+Sahara has two distinct account roles. The role is determined by which table (`users` or `professionals`) contains a row matching the authenticated `auth_id`.
+
+| Role | Description |
+|---|---|
+| `user` | Standard peer participant. Can join support sessions, write journal entries, and view their own AI analyses. |
+| `professional` | Counselor account. Must have `verified: true` in the `professionals` table. Can view participant information and transcripts for assigned sessions. |
+
+<Note>
+  A professional account that exists in the `professionals` table but has `verified: false` will receive a **403 Forbidden** response from any route guarded by `requireProfessional()`. Verification must be granted separately (e.g. by an admin).
+</Note>
+
+## Error Codes
+
+| Status | Cause |
+|---|---|
+| `401 Unauthorized` | No active Supabase session — the user is not logged in, or the session has expired. |
+| `403 Forbidden` | The user has a valid session but is a professional with `verified: false`. |
+
+## Signing Out
+
+Calling `GET /auth/logout` signs the user out server-side and redirects to `/login`:
+
+```typescript
+// app/auth/logout/route.ts
+
+export async function GET() {
+  const supabase = await createServerClientInstance();
+  await supabase.auth.signOut();
+  return NextResponse.redirect(
+    new URL('/login', process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000')
+  );
+}
+```
+
+<Warning>
+  Session cookies are set with `httpOnly` and `Secure` flags in production by the `@supabase/ssr` helper. Never attempt to read or modify them from client-side JavaScript — doing so will not work and may silently break your session.
+</Warning>

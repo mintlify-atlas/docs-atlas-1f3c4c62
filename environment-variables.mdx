@@ -1,0 +1,92 @@
+---
+title: "Configure Sahara environment variables"
+sidebarTitle: "Environment Variables"
+description: "Reference for every .env.local variable Sahara needs — Supabase connection details, LiveKit credentials, and AI API keys for transcription and analysis."
+---
+
+All secrets and runtime configuration live in a single `.env.local` file at the project root. This file is listed in `.gitignore` and must never be committed to version control. Next.js reads it automatically during `npm run dev` and `npm run build`. The app will refuse to start correctly if any required variable is missing, because the Supabase clients, LiveKit token generator, and AI routes all assert their environment variables at call time with the non-null assertion operator (`!`).
+
+## Full template
+
+Copy this block into `.env.local` and replace every placeholder before running the dev server.
+
+```env
+# Supabase
+NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+
+# LiveKit
+LIVEKIT_API_KEY=your_livekit_api_key
+LIVEKIT_API_SECRET=your_livekit_api_secret
+LIVEKIT_URL=your_livekit_url
+
+# AI
+GROQ_API_KEY=your_groq_api_key
+OPENROUTER_API_KEY=your_openrouter_api_key
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+```
+
+---
+
+## Supabase
+
+These three variables configure both the browser-side Supabase client (`lib/supabase/client.ts`) and the server-side clients (`lib/supabase/server.ts`).
+
+<ParamField path="NEXT_PUBLIC_SUPABASE_URL" type="string" required>
+  The base URL of your Supabase project, e.g. `https://xyzcompany.supabase.co`. Prefixed with `NEXT_PUBLIC_` so it is embedded in the client bundle and available to `createBrowserClient` in `lib/supabase/client.ts`. Find this value in **Project Settings → API → Project URL** in the Supabase dashboard.
+</ParamField>
+
+<ParamField path="NEXT_PUBLIC_SUPABASE_ANON_KEY" type="string" required>
+  The anonymous (public) API key for your Supabase project. Also embedded in the client bundle. It is safe to expose because Row Level Security policies control what an unauthenticated or authenticated caller can actually read or write. Find this in **Project Settings → API → Project API Keys → anon public**.
+</ParamField>
+
+<ParamField path="SUPABASE_SERVICE_ROLE_KEY" type="string" required>
+  The service role key for your Supabase project. Used exclusively in `createServiceRoleClient()` inside `lib/supabase/server.ts` for server-side operations that must bypass RLS — such as writing transcripts and AI analysis records after a session ends. This variable has no `NEXT_PUBLIC_` prefix and is never included in the client bundle.
+</ParamField>
+
+<Warning>
+  `SUPABASE_SERVICE_ROLE_KEY` bypasses all Row Level Security policies. A caller holding this key can read, write, and delete any row in any table with no restrictions. Never reference this variable in a file that contains `"use client"`, never pass it to a Client Component as a prop, and never return it from an API route response. Treat it with the same sensitivity as a database root password.
+</Warning>
+
+---
+
+## LiveKit
+
+These variables are consumed by the `livekit-server-sdk` running in Next.js API routes to generate participant tokens and manage rooms. None of them are exposed to the client bundle.
+
+<ParamField path="LIVEKIT_API_KEY" type="string" required>
+  The API key issued by LiveKit Cloud or your self-hosted LiveKit server. Paired with `LIVEKIT_API_SECRET` to sign participant tokens. Find this in your LiveKit Cloud project settings under **Keys**, or in the `config.yaml` of your self-hosted server.
+</ParamField>
+
+<ParamField path="LIVEKIT_API_SECRET" type="string" required>
+  The API secret paired with `LIVEKIT_API_KEY`. Together they are used by the `livekit-server-sdk` to create signed access tokens for each participant joining a session room. Rotate this value in LiveKit Cloud if it is ever exposed.
+</ParamField>
+
+<ParamField path="LIVEKIT_URL" type="string" required>
+  The WebSocket URL of your LiveKit server, e.g. `wss://your-project.livekit.cloud`. This is passed to the `@livekit/components-react` `LiveKitRoom` component on the client side so participants can connect to the correct server. LiveKit Cloud project URLs follow the pattern `wss://<project-slug>.livekit.cloud`.
+</ParamField>
+
+---
+
+## AI
+
+These variables power the two-stage post-session pipeline: audio transcription with Groq Whisper and history-aware analysis with an OpenRouter LLM.
+
+<ParamField path="GROQ_API_KEY" type="string" required>
+  API key for [Groq Cloud](https://console.groq.com). Used in the transcription stage to call the `whisper-large-v3-turbo` model on per-participant audio recordings stored in Supabase Storage. Without this key the transcription API route will fail and no `transcripts` rows will be created, blocking the downstream AI analysis step.
+</ParamField>
+
+<ParamField path="OPENROUTER_API_KEY" type="string" required>
+  API key for [OpenRouter](https://openrouter.ai). Used in the AI analysis stage to send a user's transcript history and journal entries to a Claude- or GPT-class model and receive a structured `summary` and `trend` value (`improving`, `stable`, or `declining`) stored in `ai_analyses`. Without this key no progress tracking data will be generated.
+</ParamField>
+
+<ParamField path="NEXT_PUBLIC_APP_URL" type="string">
+  The public base URL of the deployed app, e.g. `https://sahara.example.com`. Sent as the `HTTP-Referer` header on OpenRouter requests, which is used by OpenRouter for rate-limiting and analytics attribution. Defaults to `http://localhost:3000` in development. Set this to your production domain when deploying.
+</ParamField>
+
+---
+
+<Tip>
+  Run `supabase start` to spin up a full local Supabase stack (Postgres, Auth, Storage, and the dashboard UI) without needing a cloud project. After the command completes it prints a local `API URL`, `anon key`, and `service_role key` that you can paste directly into `.env.local`. This lets you develop and run migrations entirely offline. Stop the local stack with `supabase stop`.
+</Tip>

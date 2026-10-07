@@ -1,0 +1,129 @@
+---
+title: "Supabase: auth, database, and storage"
+sidebarTitle: "Supabase"
+description: "How Sahara uses Supabase for anonymous authentication, Postgres with row-level security, and audio file storage in peer support sessions."
+---
+
+Supabase powers three core pillars of Sahara: authentication (email/password and Google OAuth), the Postgres database with row-level security (RLS) enforced at the database layer, and object storage for session audio recordings. Every server-side operation routes through one of two client factories depending on whether it needs user-scoped permissions or elevated write access.
+
+## Authentication
+
+Sahara supports two sign-in methods via Supabase Auth — email/password and Google OAuth. Both are configured in `supabase/config.toml`:
+
+```toml
+[auth.email]
+enable_signup = true
+
+[auth.external.google]
+enabled = true
+client_id = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_ID)"
+secret    = "env(SUPABASE_AUTH_EXTERNAL_GOOGLE_SECRET)"
+```
+
+After a successful OAuth exchange, Supabase redirects the browser to `/auth/callback`, where the server exchanges the code for a session cookie.
+
+### Auth helper functions
+
+`lib/auth/helpers.ts` exposes five typed helpers used throughout Server Components and API routes:
+
+```typescript
+import { createServerClientInstance } from '@/lib/supabase/server';
+import type { User, Professional } from '@/types/db';
+
+export async function getCurrentUser(): Promise<User | null>
+
+export async function getCurrentProfessional(): Promise<Professional | null>
+
+export async function requireUser(): Promise<User>
+
+export async function requireProfessional(): Promise<Professional>
+
+export async function getUserRole(): Promise<'user' | 'professional' | null>
+```
+
+| Helper | Behaviour |
+|---|---|
+| `getCurrentUser()` | Returns the `users` row for the authenticated Supabase auth user, or `null` if unauthenticated. |
+| `getCurrentProfessional()` | Returns the `professionals` row matched by `auth_id`, or `null`. |
+| `requireUser()` | Calls `getCurrentUser()` and throws `Unauthorized: User not authenticated` if the result is `null`. |
+| `requireProfessional()` | Calls `getCurrentProfessional()`, throws if `null`, and additionally throws `Forbidden: Professional not verified` when `professional.verified` is `false`. |
+| `getUserRole()` | Runs `getCurrentUser()` and `getCurrentProfessional()` in parallel; returns `'user'`, `'professional'`, or `null`. |
+
+## Database clients
+
+`lib/supabase/server.ts` exports two client factories. Server Components and middleware use `createServerClientInstance()`, which reads the active session from cookies and respects RLS policies. API routes that must perform privileged writes — such as inserting session records and participant rows — use `createServiceRoleClient()`, which bypasses RLS entirely.
+
+<CodeGroup>
+```typescript createServerClientInstance
+import { createServerClient, type CookieOptions } from '@supabase/ssr';
+import { cookies } from 'next/headers';
+
+export async function createServerClientInstance() {
+  const cookieStore = await cookies();
+
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        get(name: string) {
+          return cookieStore.get(name)?.value;
+        },
+        set(name: string, value: string, options: CookieOptions) {
+          try {
+            cookieStore.set({ name, value, ...options });
+          } catch {
+            // Called from a Server Component — safe to ignore when
+            // middleware is refreshing the session.
+          }
+        },
+        remove(name: string, options: CookieOptions) {
+          try {
+            cookieStore.set({ name, value: '', ...options });
+          } catch {
+            // Same rationale as set().
+          }
+        },
+      },
+    }
+  );
+}
+```
+
+```typescript createServiceRoleClient
+import { createClient } from '@supabase/supabase-js';
+
+export function createServiceRoleClient() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  );
+}
+```
+</CodeGroup>
+
+The browser client used in Client Components (`lib/supabase/client.ts`) is a thin wrapper around `createBrowserClient` from `@supabase/ssr` and relies on the same public environment variables.
+
+For a full description of the RLS policies protecting each table, see the [Security](/architecture/security) page.
+
+## Storage
+
+Audio recordings captured during sessions are stored in the **`audio-recordings`** Supabase Storage bucket. The bucket was made publicly readable in migration `0011_make_audio_bucket_public.sql` so that the transcription pipeline can download files over a plain HTTPS URL without requiring a service-role token on every request.
+
+After a recording is uploaded, its public URL is written to the `audio_recording_url` column of the `session_participants` table. The `/api/transcribe` route reads this URL, downloads the audio buffer, and forwards it to the Groq Whisper API.
+
+## Environment variables
+
+See the [Environment Variables](/environment-variables) page for the full list. The variables consumed by the Supabase integration are:
+
+| Variable | Scope | Purpose |
+|---|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | Client + Server | Project API URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Client + Server | Public anon key (respects RLS) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Server only | Bypasses RLS for privileged writes |
+| `SUPABASE_AUTH_EXTERNAL_GOOGLE_CLIENT_ID` | Supabase config | Google OAuth client ID |
+| `SUPABASE_AUTH_EXTERNAL_GOOGLE_SECRET` | Supabase config | Google OAuth client secret |
+
+<Note>
+  Sahara uses the [`@supabase/ssr`](https://supabase.com/docs/guides/auth/server-side/nextjs) package rather than the legacy `@supabase/auth-helpers-nextjs`. The `@supabase/ssr` package is purpose-built for Next.js App Router and manages session cookies correctly across Server Components, Route Handlers, and Middleware.
+</Note>

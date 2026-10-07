@@ -1,0 +1,143 @@
+---
+title: "Group Sessions and Live Video Rooms"
+sidebarTitle: "Sessions"
+description: "Create or join anonymous live video rooms backed by LiveKit. Supports peer-only, peer-plus-counselor, and one-on-one session types."
+---
+
+Sessions are the core collaboration primitive in Sahara. Each session belongs to a **group** — a named topic with a fixed session type — and is powered by a LiveKit room that handles real-time audio and video. Users can join an existing open session or start a new one from the `/sessions` page. All participants are identified only by their anonymous display name; no personally identifiable information is exposed inside the room.
+
+## Session types
+
+Every group is created with one of three session types. The type determines who can participate and whether a verified counselor is present.
+
+| Type | Value | Description |
+|------|-------|-------------|
+| Peer Support | `peer` | Anonymous peer group with no professional present |
+| Peer + Counselor | `peer_counselor` | Peer group with an assigned, verified counselor facilitating the session |
+| One-on-One | `one_on_one` | Private direct session between a single user and a counselor |
+
+The `session_type` is set on the `groups` row at creation time and cannot be changed after the group is created. It is sourced from the `SessionType` union type in `types/db.ts`:
+
+```typescript
+export type SessionType = 'peer' | 'peer_counselor' | 'one_on_one';
+```
+
+## Session lifecycle
+
+<Steps>
+  <Step title="Browse groups">
+    The `/sessions` page queries the `groups` table and renders every group as a card. Each card shows the topic, session type badge, and optional description. Clicking a card navigates to `/sessions/join/<groupId>`, which triggers the start flow.
+  </Step>
+  <Step title="Create or join — POST /api/sessions/start">
+    Calling `POST /api/sessions/start?groupId=<id>` performs the following atomically:
+
+    1. Looks up the group by `groupId`.
+    2. Checks for an existing `sessions` row where `group_id = <id>` and `ended_at IS NULL`.
+    3. If one exists, adds the authenticated user as a participant (idempotent — skipped if already joined).
+    4. If none exists, inserts a new `sessions` row, adds the user as the first participant, and calls `createLiveKitRoom(roomName)`.
+    5. Generates and returns a signed LiveKit participant token.
+
+    **Successful response:**
+    ```json
+    {
+      "sessionId": "uuid",
+      "livekit": {
+        "token": "<signed-jwt>",
+        "roomName": "session-<uuid>",
+        "url": "wss://your-livekit-host"
+      },
+      "group": {
+        "id": "uuid",
+        "topic": "Anxiety Check-in",
+        "sessionType": "peer"
+      }
+    }
+    ```
+  </Step>
+  <Step title="Live room — session-&lt;sessionId&gt;">
+    The client renders a `<LiveKitRoom>` component connecting to `wss://<LIVEKIT_URL>` with the token from the previous step. The LiveKit room is always named `session-<sessionId>`.
+
+    Inside the room, each participant sees:
+    - A video tile grid with camera tracks (falls back to an avatar if the camera is off).
+    - A mute/unmute toggle and a camera on/off toggle in the bottom control bar.
+    - A running session timer in the header.
+    - A red pulsing dot and elapsed counter while audio recording is active.
+    - A blue pulsing indicator while speech-to-text transcription is running.
+
+    The token grants both `canPublish` and `canSubscribe` permissions.
+  </Step>
+  <Step title="End session — POST /api/sessions/end">
+    Any verified participant can end the session by calling `POST /api/sessions/end?sessionId=<id>`. The route:
+
+    1. Confirms the caller is a participant.
+    2. Sets `ended_at = now()` on the `sessions` row.
+    3. Calls `deleteRoom(roomName)` to tear down the LiveKit room (failures here are non-fatal).
+
+    ```bash
+    POST /api/sessions/end?sessionId=<uuid>
+    Authorization: (session cookie)
+    ```
+  </Step>
+  <Step title="Post-session analysis">
+    After the room closes, each participant's transcript (captured by the in-browser `useSpeechRecognition` hook) is persisted to `session_participants.transcript`. Users can then navigate to `/sessions/<sessionId>/analyze` to trigger an AI analysis via `POST /api/analyze`, which writes a row to `ai_analyses` containing a `summary`, `trend`, and `themes[]`.
+  </Step>
+</Steps>
+
+## Audio recording
+
+Every participant's audio is captured independently in the browser using the `useAudioRecorder` hook (`hooks/useAudioRecorder.ts`). The hook wraps the Web [`MediaRecorder` API](https://developer.mozilla.org/en-US/docs/Web/API/MediaRecorder) and streams audio in 1-second chunks into an `audio/webm;codecs=opus` container.
+
+When the LiveKit room emits a `Disconnected` event, the recorder stops and the resulting `Blob` is uploaded to the `audio-recordings` Supabase Storage bucket under the path `<userId>/<sessionId>-<timestamp>.webm`. The public URL is then written back to the participant's row:
+
+```
+session_participants.audio_recording_url = "<public-storage-url>"
+```
+
+The full upload sequence (from `SessionRoomContent.tsx`):
+
+```typescript
+const fileName = `${user.id}/${sessionId}-${Date.now()}.webm`;
+
+await supabase.storage
+  .from('audio-recordings')
+  .upload(fileName, blob, { contentType: 'audio/webm', upsert: false });
+
+const { data: urlData } = supabase.storage
+  .from('audio-recordings')
+  .getPublicUrl(fileName);
+
+await fetch('/api/sessions/recording', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ sessionId, recordingUrl: urlData.publicUrl }),
+});
+```
+
+The recording URL is scoped per-participant, so each user in a group session has their own audio file — recordings are never merged server-side.
+
+## Joining vs. creating a session
+
+When a user navigates to `/sessions/join/<groupId>`, the client calls `POST /api/sessions/start?groupId=<groupId>`. The API automatically determines whether to create or reuse:
+
+| Condition | Behaviour |
+|-----------|-----------|
+| Open session exists (`ended_at IS NULL`) | User is added as a participant and receives a token for the existing room |
+| No open session exists | A new `sessions` row and LiveKit room are created; user becomes the first participant |
+
+A user who disconnects and reconnects to the same group will be placed back into the same open session (the participant row already exists, so a duplicate insert is skipped).
+
+To **create a brand-new group** (and therefore a new session type), users navigate to `/sessions/create` and POST to `POST /api/groups` with a `topic`, optional `description`, and `sessionType`.
+
+```json
+{
+  "topic": "Grief Support Circle",
+  "description": "A safe space to share and process loss.",
+  "sessionType": "peer_counselor"
+}
+```
+
+On success the API returns the new `Group` row with HTTP 201, and the client redirects to `/sessions/join/<newGroupId>`.
+
+<Note>
+  A session belongs to a group, and a group can host many sessions over time. When one session ends, the next user to visit `/sessions/join/<groupId>` will automatically start a fresh session under the same group topic and type.
+</Note>

@@ -1,0 +1,95 @@
+---
+title: "Private Journal and AI Analysis Context"
+sidebarTitle: "Journal"
+description: "Write private freeform journal entries and optionally surface them to the AI analysis engine for richer, personalized wellbeing insights."
+---
+
+The journal is a private, freeform writing space that lives at `/journal`. Every entry is stored in the `journal_entries` table and is readable only by the user who created it — no professional, counselor, or other user has access. By default, entries are kept entirely private. A single boolean flag, `include_in_analysis`, lets users opt specific entries into the AI context window so that the analysis engine can factor personal reflections alongside session transcripts when generating wellbeing insights.
+
+## How it works
+
+### Creating an entry — POST /api/journal
+
+Submit a JSON body to `POST /api/journal` with the entry content. Set `includeInAnalysis: true` if you want the entry pulled into future AI analyses.
+
+```json
+{ "content": "Feeling more grounded after today's session.", "includeInAnalysis": true }
+```
+
+The API validates that `content` is a non-empty string, then inserts a row into `journal_entries` for the authenticated user:
+
+```typescript
+await supabase
+  .from('journal_entries')
+  .insert({
+    user_id: user.id,
+    content: content.trim(),
+    include_in_analysis: includeInAnalysis ?? false,
+  });
+```
+
+A successful response returns the full entry object:
+
+```json
+{
+  "entry": {
+    "id": "uuid",
+    "user_id": "uuid",
+    "content": "Feeling more grounded after today's session.",
+    "include_in_analysis": true,
+    "created_at": "2024-01-15T10:30:00Z"
+  }
+}
+```
+
+### Toggling analysis inclusion — PATCH /api/journal
+
+An `include_in_analysis` flag can be flipped at any time after creation. The journal page renders an **Analyze** / **Analyzing** toggle button on every entry; clicking it sends:
+
+```json
+{ "entryId": "<uuid>", "includeInAnalysis": true }
+```
+
+The API enforces ownership with `.eq('user_id', user.id)` before updating, so a user can never modify another user's entries.
+
+### Deleting an entry — DELETE /api/journal
+
+Pass the entry ID as a query parameter:
+
+```
+DELETE /api/journal?id=<entryId>
+```
+
+The row is deleted only if `user_id` matches the authenticated user. No soft-delete is performed; the entry is permanently removed.
+
+## The `include_in_analysis` flag
+
+<ParamField body="include_in_analysis" type="boolean" default="false">
+  When `true`, the journal entry is included in the data fetched by `getUserTranscriptHistory()` on the progress page. The function queries `journal_entries` filtered to `include_in_analysis = true` and maps each entry to a `TranscriptEntry` with `source: 'journal'`. These entries are combined with session transcripts and uploaded audio transcripts before being passed to the LLM for analysis.
+</ParamField>
+
+Setting this flag gives the AI a fuller picture of a user's emotional state between sessions. An entry flagged for analysis is treated exactly like a session transcript inside the analysis prompt — its `content` becomes part of the context window alongside anything the user said aloud during a session.
+
+The `/progress` page counts flagged entries in a stats badge visible at the top of the journal UI, so users always know how many entries are currently feeding into their analyses.
+
+## Privacy guarantees
+
+Journal entries are protected at the database level by a Row Level Security (RLS) policy:
+
+> **`users can view own journal entries`** — the `journal_entries` table restricts `SELECT`, `INSERT`, `UPDATE`, and `DELETE` to rows where `user_id` matches the caller's application user ID.
+
+No other user, professional, or counselor can read a user's journal entries, even if `include_in_analysis` is enabled. The analysis pipeline runs entirely on server-side infrastructure using the service-role client, and the AI model only receives the plain text content — no user identity is forwarded to the LLM.
+
+## API reference summary
+
+| Method | Path | Body / Query | Purpose |
+|--------|------|--------------|---------|
+| `POST` | `/api/journal` | `{ content, includeInAnalysis? }` | Create a new entry |
+| `PATCH` | `/api/journal` | `{ entryId, includeInAnalysis }` | Toggle analysis flag on an existing entry |
+| `DELETE` | `/api/journal` | `?id=<entryId>` | Permanently delete an entry |
+
+All three routes call `requireUser()` and return HTTP 401 if the session is missing. Mutating another user's entry silently fails due to the `user_id` filter in the Supabase query.
+
+<Tip>
+  Flag journal entries for analysis when they describe emotionally significant moments — breakthroughs after a session, difficult days, or recurring patterns you've noticed. The more context the AI has, the more accurate and personalised your trend and theme reports will be on the Progress page.
+</Tip>

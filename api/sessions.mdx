@@ -1,0 +1,207 @@
+---
+title: "Sessions API — start, join, and end sessions"
+sidebarTitle: "Sessions"
+description: "Manage the full lifecycle of live video sessions — creating or joining a LiveKit room, ending it, and persisting recording metadata per participant."
+---
+
+The Sessions API manages the complete lifecycle of a live video session in Sahara. Starting a session either creates a new LiveKit room and database record or joins an already-active room for the group. Ending a session stamps `ended_at` and tears down the LiveKit room. The recording endpoint persists per-participant audio URLs and transcripts captured on the client side.
+
+---
+
+## POST /api/sessions/start
+
+<span style={{display:"inline-block",background:"#16a34a",color:"#fff",borderRadius:"4px",padding:"2px 8px",fontWeight:700,fontSize:"0.8rem",marginBottom:"1rem"}}>POST</span> `/api/sessions/start?groupId=<id>`
+
+Starts a new session for the given group, or joins an existing active session if one is already running (i.e. a session row where `ended_at IS NULL`). In either case a fresh LiveKit participant token is generated and returned so the client can connect immediately.
+
+**Auth:** requires an active user session.
+
+### Query parameters
+
+<ParamField query="groupId" type="string" required>
+  UUID of the group to start or join a session for.
+</ParamField>
+
+### Behavior
+
+1. Looks up the group by `groupId`.
+2. Queries `sessions` for an active row (`ended_at IS NULL`) belonging to the group.
+   - **If found:** adds the current user as a participant (if not already one) and reuses the existing `sessionId`.
+   - **If not found:** inserts a new `sessions` row, adds the user as a participant, and calls `createLiveKitRoom("session-<sessionId>")`.
+3. Generates a LiveKit participant token via `generateParticipantToken`, granting both publish and subscribe permissions.
+4. Returns the session ID, LiveKit credentials, and group metadata.
+
+### Response `200`
+
+<ResponseField name="sessionId" type="string">
+  UUID of the session that was created or joined.
+</ResponseField>
+
+<ResponseField name="livekit" type="object">
+  LiveKit connection credentials.
+  <Expandable title="livekit fields">
+    <ResponseField name="livekit.token" type="string">
+      Short-lived JWT token the client passes to the LiveKit SDK to join the room.
+    </ResponseField>
+    <ResponseField name="livekit.roomName" type="string">
+      Name of the LiveKit room, formatted as `session-<sessionId>`.
+    </ResponseField>
+    <ResponseField name="livekit.url" type="string">
+      WebSocket URL of the LiveKit server, sourced from the `LIVEKIT_URL` environment variable.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="group" type="object">
+  Summary of the group the session belongs to.
+  <Expandable title="group fields">
+    <ResponseField name="group.id" type="string">
+      UUID of the group.
+    </ResponseField>
+    <ResponseField name="group.topic" type="string">
+      The group's topic string.
+    </ResponseField>
+    <ResponseField name="group.sessionType" type="'peer' | 'peer_counselor' | 'one_on_one'">
+      The session type configured on the group.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Errors
+
+| Status | Condition |
+|---|---|
+| `400` | `groupId` query parameter is missing |
+| `401` | No authenticated user session |
+| `404` | No group with the given `groupId` exists |
+| `503` | LiveKit environment variables (`LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`) are not configured |
+| `500` | Database error creating the session or participant row |
+
+---
+
+## POST /api/sessions/end
+
+<span style={{display:"inline-block",background:"#16a34a",color:"#fff",borderRadius:"4px",padding:"2px 8px",fontWeight:700,fontSize:"0.8rem",marginBottom:"1rem"}}>POST</span> `/api/sessions/end?sessionId=<id>`
+
+Ends an active session by stamping `ended_at` with the current UTC timestamp and deleting the corresponding LiveKit room. Only a verified participant of the session may end it.
+
+**Auth:** requires an active user session.
+
+### Query parameters
+
+<ParamField query="sessionId" type="string" required>
+  UUID of the session to end.
+</ParamField>
+
+### Behavior
+
+1. Verifies the calling user is listed in `session_participants` for the given session.
+2. Confirms the session exists and has `ended_at IS NULL` (i.e. is still active).
+3. Updates `sessions.ended_at` to `new Date().toISOString()`.
+4. Calls `deleteRoom("session-<sessionId>")` on the LiveKit server. If room deletion fails, the error is logged but the HTTP response still succeeds.
+
+### Response `200`
+
+```json
+{
+  "success": true,
+  "message": "Session ended",
+  "sessionId": "e3b0c442-98fc-1c14-9afb-f4c8996fb924"
+}
+```
+
+<ResponseField name="success" type="boolean">
+  Always `true` on a successful response.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Human-readable confirmation string — `"Session ended"`.
+</ResponseField>
+
+<ResponseField name="sessionId" type="string">
+  The UUID of the session that was ended, echoed back for convenience.
+</ResponseField>
+
+### Errors
+
+| Status | Condition |
+|---|---|
+| `400` | `sessionId` query parameter is missing |
+| `401` | No authenticated user session |
+| `403` | The calling user is not a participant of the session |
+| `404` | Session not found or `ended_at` is already set |
+| `500` | Database update failure |
+
+---
+
+## POST /api/sessions/recording
+
+<span style={{display:"inline-block",background:"#16a34a",color:"#fff",borderRadius:"4px",padding:"2px 8px",fontWeight:700,fontSize:"0.8rem",marginBottom:"1rem"}}>POST</span> `/api/sessions/recording`
+
+Persists a per-participant audio recording URL and/or a transcript string onto the caller's `session_participants` row. The client is responsible for uploading the audio file to Supabase Storage and providing the resulting URL.
+
+**Auth:** requires an active user session.
+
+### Request body
+
+<ParamField body="sessionId" type="string" required>
+  UUID of the session the recording belongs to.
+</ParamField>
+
+<ParamField body="recordingUrl" type="string">
+  Public or signed URL of the audio file in Supabase Storage. Written to `session_participants.audio_recording_url`.
+</ParamField>
+
+<ParamField body="transcript" type="string">
+  Transcript text to save. Written to `session_participants.transcript`. Can be provided here directly, or populated later via [POST /api/transcribe](/api/transcribe).
+</ParamField>
+
+<Note>
+  At least one of `recordingUrl` or `transcript` must be present. Sending a body with only `sessionId` returns a `400` with `"No data to save"`.
+</Note>
+
+### Response `200`
+
+```json
+{ "success": true }
+```
+
+<ResponseField name="success" type="boolean">
+  `true` when the `session_participants` row was updated successfully.
+</ResponseField>
+
+### Errors
+
+| Status | Condition |
+|---|---|
+| `400` | `sessionId` is missing, or neither `recordingUrl` nor `transcript` was provided |
+| `401` | No authenticated user session |
+| `500` | Database update failure |
+
+---
+
+## Example
+
+### Start a session
+
+```bash
+curl -X POST \
+  "https://your-sahara-app.vercel.app/api/sessions/start?groupId=e3b0c442-98fc-1c14-9afb-f4c8996fb924" \
+  -H "Cookie: <SESSION_COOKIE>"
+```
+
+```json
+{
+  "sessionId": "a1b2c3d4-0000-4000-8000-112233445566",
+  "livekit": {
+    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "roomName": "session-a1b2c3d4-0000-4000-8000-112233445566",
+    "url": "wss://my-livekit-server.livekit.cloud"
+  },
+  "group": {
+    "id": "e3b0c442-98fc-1c14-9afb-f4c8996fb924",
+    "topic": "Anxiety & Overthinking",
+    "sessionType": "peer"
+  }
+}
+```

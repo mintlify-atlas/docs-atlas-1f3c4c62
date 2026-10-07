@@ -1,0 +1,88 @@
+---
+title: "Sahara: Anonymous Peer Support Platform"
+sidebarTitle: "Introduction"
+description: "Sahara is an anonymous peer-support platform using LiveKit, Supabase, and AI to record, transcribe, and analyze sessions to track wellbeing trends."
+---
+
+Sahara is an anonymous peer-support web application built for people who need a safe space to talk — and for the professionals who care for them. Users join video or text-based group sessions, speak openly under a chosen display name, and leave with no identifying trace. After each session, their audio is transcribed by Groq Whisper, analyzed against their personal history by an OpenRouter LLM, and surfaced as a wellbeing trend so both the user and any connected professional can see progress over time. If the system detects a declining trend, a helpline escalation path routes the user to a human counselor without exposing any personal identity.
+
+## Core Loop
+
+```
+Join Session (peer group / group + counselor / 1:1 counselor)
+  → Talk  →  Audio recorded via LiveKit
+  → Post-session transcription (Groq Whisper whisper-large-v3-turbo)
+  → AI analysis against user history (OpenRouter LLM)
+  → Progress tracked (improving | stable | declining)
+  → Escalate to human professional if needed
+```
+
+## Tech Stack
+
+| Layer | Choice |
+|---|---|
+| Frontend | Next.js 16 App Router, TypeScript, Tailwind CSS v4 |
+| Auth | Supabase Auth — email/password and Google OAuth |
+| Database | Supabase Postgres with Row Level Security (RLS) |
+| File Storage | Supabase Storage — per-participant audio recordings |
+| Real-time Video | LiveKit — video rooms, mic/cam controls, server-side recording |
+| Speech-to-Text | Groq Whisper API (`whisper-large-v3-turbo`) |
+| AI Analysis | OpenRouter — LLM analysis with history-aware trend detection |
+| Testing | Playwright — auth flows, RLS boundaries, session state transitions |
+
+## User Roles
+
+Sahara has two distinct account types that travel through completely separate Next.js route groups and are stored in different database tables.
+
+**Users** (`app/(user)/`) sign up with a display name and an email address. Their `auth_id` links Supabase Auth to the `users` table. They browse topic-based groups, join or create sessions, write private journal entries, respond to forum prompts, and view their AI-generated progress notes. Identity is intentionally minimal — no real name is required.
+
+**Professionals** (`app/(professional)/`) sign up through a separate flow and are stored in the `professionals` table. A `verified` boolean gates access: unverified professionals can log in but cannot access client data or join counselor sessions until an administrator sets `verified = true`. Verified professionals see a dashboard with linked clients, session history, and the ability to author progress notes alongside AI-generated ones.
+
+Auth helpers in `lib/auth/helpers.ts` expose `requireUser()` and `requireProfessional()` for Server Components and API routes. `requireProfessional()` throws `Forbidden` if the professional row exists but `verified` is `false`, preventing partially-registered accounts from accessing sensitive data.
+
+```ts
+// lib/auth/helpers.ts (excerpt)
+export async function requireProfessional(): Promise<Professional> {
+  const professional = await getCurrentProfessional();
+  if (!professional) throw new Error('Unauthorized: Professional not authenticated');
+  if (!professional.verified) throw new Error('Forbidden: Professional not verified');
+  return professional;
+}
+```
+
+## Key Concepts
+
+**`SessionType`** controls which kind of room a group hosts and determines which participants can join it:
+
+| Value | Description |
+|---|---|
+| `peer` | Peer-only group — no professional present, fully anonymous between members |
+| `peer_counselor` | Group session with an optional verified professional observing or facilitating |
+| `one_on_one` | Private session between a single user and a verified professional |
+
+**`Trend`** is the output of the post-session AI analysis, stored on every `ai_analyses` row:
+
+| Value | Meaning |
+|---|---|
+| `improving` | Recent sessions and journal entries show a positive trajectory |
+| `stable` | No significant change detected over the analysis window |
+| `declining` | Wellbeing signals are worsening; helpline escalation is surfaced to the user |
+
+**RLS identity isolation** — every table in Supabase Postgres has a Row Level Security policy. No user can read another user's records. The two Postgres functions `current_app_user_id()` and `current_professional_id()` resolve the caller's identity from the JWT so policies can reference them without a join. The service role key (`SUPABASE_SERVICE_ROLE_KEY`) bypasses RLS entirely and is only ever called from server-side code in `lib/supabase/server.ts`.
+
+## Where to Go Next
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Clone the repo, configure environment variables, and have the dev server running in minutes.
+  </Card>
+  <Card title="Sessions" icon="video" href="/features/sessions">
+    Deep dive into LiveKit room creation, per-participant recording, and the session state machine.
+  </Card>
+  <Card title="Architecture Overview" icon="sitemap" href="/architecture/overview">
+    Understand route groups, the Supabase client/server split, and data flow across the stack.
+  </Card>
+  <Card title="API Overview" icon="code" href="/api/overview">
+    Reference for all Next.js API routes — sessions, transcription, AI analysis, and helpline.
+  </Card>
+</CardGroup>

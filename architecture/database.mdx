@@ -1,0 +1,174 @@
+---
+title: "Sahara database schema and data model"
+sidebarTitle: "Database"
+description: "Complete reference for Sahara's Supabase Postgres schema: tables, RLS helper functions, TypeScript types, and the full migration history."
+---
+
+Sahara's database layer is a Supabase Postgres instance with Row Level Security enforced on every table without exception. Two extensions are enabled from the very first migration: `pgcrypto` provides `gen_random_uuid()` for primary key generation, and `pgvector` is loaded early to support future history-embedding workflows without requiring a disruptive schema change. All application data — from session recordings to private journal entries — lives in the `public` schema; the `auth` schema is managed exclusively by Supabase Auth and is only referenced via foreign keys.
+
+## Schema overview
+
+| Table | Primary Key | Purpose |
+| --- | --- | --- |
+| `users` | `uuid` | Anonymous user profiles linked to `auth.users` via `auth_id` |
+| `professionals` | `uuid` | Verified counselor accounts with `credentials` text and a `verified` boolean flag |
+| `groups` | `uuid` | Topic-based support groups; `session_type` constrained to `peer`, `peer_counselor`, or `one_on_one` |
+| `sessions` | `uuid` | Session instances linked to a group and an optional professional |
+| `session_participants` | `uuid` | Per-user participation row; holds `audio_recording_url` and `transcript` |
+| `transcripts` | `uuid` | Post-session transcription text linked to a `session_participants` row |
+| `ai_analyses` | `uuid` | AI wellbeing analysis with `summary`, `trend`, and stored per user per session |
+| `progress_notes` | `uuid` | AI- or professional-authored notes; `author` constrained to `ai` or `professional` |
+| `journal_entries` | `uuid` | Private user journal; `include_in_analysis` boolean opts the entry into AI context |
+| `recordings` | `uuid` | Manual audio uploads (not tied to a live session); stores `file_url` and optional `transcript` |
+| `forum_prompts` | `uuid` | Community engagement prompts; `active` boolean controls visibility |
+| `forum_responses` | `uuid` | User responses to forum prompts |
+| `helpline_requests` | `uuid` | Emergency escalation requests; `status` constrained to `pending`, `contacted`, or `resolved` |
+
+<Note>
+  The `session_participants` table has a compound unique constraint on `(session_id, user_id)`, preventing a user from being listed twice in the same session. The table is indexed on both `user_id` and `session_id` for fast participant lookups.
+</Note>
+
+## RLS helper functions
+
+Three `SECURITY DEFINER` functions bridge the gap between Supabase Auth's `auth.uid()` (which returns an `auth.users` UUID) and the application-layer IDs used in RLS policies:
+
+```sql
+-- Returns the public.users.id for the current authenticated user
+create or replace function public.current_app_user_id()
+returns uuid
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select id from public.users where auth_id = auth.uid();
+$$;
+
+-- Returns the public.professionals.id for the current authenticated professional
+create or replace function public.current_professional_id()
+returns uuid
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select id from public.professionals where auth_id = auth.uid();
+$$;
+
+-- Returns true if the current user is a verified professional
+create or replace function public.is_verified_professional()
+returns boolean
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select coalesce(
+    (select verified from public.professionals where auth_id = auth.uid()),
+    false
+  );
+$$;
+```
+
+Because these functions carry `SECURITY DEFINER`, they execute with the privileges of the function owner and bypass RLS on the tables they query internally. This prevents the circular dependency that would arise from RLS policies on `sessions` querying `session_participants`, which itself needs to check `sessions` — a problem introduced early in the migration history and resolved in `0004_fix_session_rls_recursion.sql`.
+
+Migration `0004` also adds two session-scoped helpers used directly in policies:
+
+```sql
+-- True if the current user is a participant in the given session
+create or replace function public.is_participant_in_session(sess_id uuid)
+returns boolean language sql security definer stable ...
+
+-- True if the current professional is assigned to the given session
+create or replace function public.is_professional_for_session(sess_id uuid)
+returns boolean language sql security definer stable ...
+```
+
+## TypeScript types
+
+`types/db.ts` exports a flat set of interfaces that mirror the database schema exactly, plus a top-level `Database` generic used to type the Supabase client.
+
+### Primitive union types
+
+```typescript
+export type SessionType = 'peer' | 'peer_counselor' | 'one_on_one';
+export type Trend       = 'improving' | 'stable' | 'declining';
+export type ProgressNoteAuthor = 'ai' | 'professional';
+export type HelplineStatus     = 'pending' | 'contacted' | 'resolved';
+```
+
+### Table interfaces
+
+Each table has a `Row` interface for full rows, an `Insert` interface with auto-generated fields (`id`, `created_at`) stripped via `Omit`, and an `Update` interface that makes everything in `Insert` optional via `Partial`. For example:
+
+```typescript
+export interface SessionParticipant {
+  id: string;
+  session_id: string;
+  user_id: string;
+  audio_recording_url: string | null;
+  transcript: string | null;
+  created_at: string;
+}
+
+// Insert omits id and created_at; audio_recording_url and transcript are optional
+export interface SessionParticipantInsert {
+  session_id: string;
+  user_id: string;
+  audio_recording_url?: string | null;
+  transcript?: string | null;
+}
+```
+
+### The `Database` generic
+
+```typescript
+export interface Database {
+  public: {
+    Tables: {
+      users:                { Row: User;               Insert: ...; Update: ... };
+      professionals:        { Row: Professional;       Insert: ...; Update: ... };
+      groups:               { Row: Group;              Insert: ...; Update: ... };
+      sessions:             { Row: Session;            Insert: SessionInsert; Update: ... };
+      session_participants: { Row: SessionParticipant; Insert: SessionParticipantInsert; Update: ... };
+      transcripts:          { Row: Transcript;         Insert: ...; Update: ... };
+      ai_analyses:          { Row: AIAnalysis;         Insert: ...; Update: ... };
+      progress_notes:       { Row: ProgressNote;       Insert: ...; Update: ... };
+      journal_entries:      { Row: JournalEntry;       Insert: ...; Update: ... };
+      forum_prompts:        { Row: ForumPrompt;        Insert: ...; Update: ... };
+      forum_responses:      { Row: ForumResponse;      Insert: ...; Update: ... };
+      helpline_requests:    { Row: HelplineRequest;    Insert: ...; Update: ... };
+    };
+    Functions: {
+      current_app_user_id:     { Args: {}; Returns: string };
+      current_professional_id: { Args: {}; Returns: string };
+      is_verified_professional:{ Args: {}; Returns: boolean };
+    };
+  };
+}
+```
+
+Pass `Database` as the generic argument when instantiating the Supabase client for full end-to-end type inference on queries.
+
+## Migration history
+
+Migrations live in `supabase/migrations/` and must be applied in sequence via `supabase db push`.
+
+| File | What it adds |
+| --- | --- |
+| `0001_init.sql` | Full initial schema: all 11 tables, indexes, `pgcrypto`/`pgvector` extensions, `current_app_user_id()`, `current_professional_id()`, `is_verified_professional()`, and all baseline RLS policies |
+| `0002_allow_group_creation.sql` | Adds `INSERT`, `UPDATE`, and `DELETE` policies on `groups` for authenticated users |
+| `0003_allow_session_creation.sql` | Adds `INSERT` policy on `sessions` for authenticated users |
+| `0004_fix_session_rls_recursion.sql` | Introduces `is_participant_in_session()` and `is_professional_for_session()` SECURITY DEFINER functions; rewrites `sessions` and `session_participants` policies to eliminate circular RLS recursion |
+| `0005_fix_session_insert_policy.sql` | Replaces `auth.role() = 'authenticated'` checks with `auth.uid() is not null` across `sessions`, `groups`, `professionals`, and `forum_prompts` — fixing a reliability issue with cookie-based auth and the anon key |
+| `0006_audio_recordings_storage.sql` | Creates the `audio-recordings` Storage bucket (initially private) and adds per-user upload, read, and delete policies on `storage.objects` scoped to the user's UID folder |
+| `0007_add_transcript_column.sql` | Adds a `transcript text` column to `session_participants` for denormalized transcript storage |
+| `0008_manual_recordings.sql` | Creates the `recordings` table for user-uploaded audio files not tied to a live session; RLS restricts all operations to the owning user |
+| `0009_fix_recordings_fk.sql` | Recreates the `recordings` table with the foreign key corrected to `public.users(id)` instead of `auth.users(id)`; migrates any existing rows |
+| `0011_make_audio_bucket_public.sql` | Flips `audio-recordings` Storage bucket to `public = true` so signed URLs work directly in HTML `<audio>` elements |
+| `0012_add_transcript_to_recordings.sql` | Adds a `transcript text` column to the `recordings` table to store Whisper output for manual uploads |
+| `0013_journal_include_in_analysis.sql` | Adds `include_in_analysis boolean NOT NULL DEFAULT false` to `journal_entries`, letting users opt individual entries into their AI analysis context |
+
+<Tip>
+  To apply all migrations against a local Supabase instance, run `supabase start` followed by `supabase db push`. The migrations are idempotent where possible but must be applied in the numeric order shown above.
+</Tip>

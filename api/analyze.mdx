@@ -1,0 +1,139 @@
+---
+title: "Analyze API — AI wellbeing trend analysis"
+sidebarTitle: "Analyze"
+description: "Generate an AI-powered wellbeing analysis from a session or recording transcript, including a summary, trend direction, and key emotional themes."
+---
+
+The Analyze endpoint accepts a transcript — sourced from either a live session participant record or a standalone recording — and produces a structured wellbeing analysis containing a prose summary, a trend direction, and a list of key themes. Historical context (up to five prior session transcripts and ten opted-in journal entries) is automatically gathered to give the underlying model a longitudinal view of the user's wellbeing. The result is persisted to the `ai_analyses` table and returned in the response.
+
+---
+
+## POST /api/analyze
+
+<span style={{display:"inline-block",background:"#16a34a",color:"#fff",borderRadius:"4px",padding:"2px 8px",fontWeight:700,fontSize:"0.8rem",marginBottom:"1rem"}}>POST</span> `/api/analyze`
+
+Runs AI analysis on a transcript and returns a structured wellbeing assessment.
+
+**Auth:** requires an active user session.
+
+### Request body
+
+<ParamField body="sessionId" type="string">
+  UUID of a session. When provided, the transcript is read from the calling user's row in `session_participants` (matched by both `session_id` and `user_id`).
+</ParamField>
+
+<ParamField body="recordingId" type="string">
+  UUID of a row in the `recordings` table. When provided, the transcript is read from `recordings.transcript`. Ignored when `sessionId` is also present.
+</ParamField>
+
+<Note>
+  At least one of `sessionId` or `recordingId` is required. If neither is supplied the request returns `400`. If the resolved transcript field is `null` or empty (i.e. transcription has not been run yet), the request also returns `400` — run [POST /api/transcribe](/api/transcribe) first.
+</Note>
+
+### Behavior
+
+1. Resolves the transcript:
+   - `sessionId` → queries `session_participants` filtered by `session_id = sessionId` AND `user_id = <caller>`.
+   - `recordingId` → queries `recordings` filtered by `id = recordingId`.
+2. Calls `getUserTranscriptHistory(supabase, userId)` to assemble a historical context string containing:
+   - Up to **5** previous session transcripts (most recent first, `transcript IS NOT NULL`)
+   - Up to **10** journal entries where `include_in_analysis = true` (most recent first)
+3. Submits the transcript and history to `analyzeTranscript()`, which calls the OpenRouter API (`nvidia/nemotron-3-ultra-550b-a55b:free`) with a structured mental-health analysis prompt.
+4. Inserts the result into `ai_analyses` with `user_id`, `session_id` (if applicable), `summary`, and `trend`.
+5. Returns `summary`, `trend`, and `themes` in the response.
+
+### Response `200`
+
+<ResponseField name="success" type="boolean">
+  Always `true` on a successful analysis.
+</ResponseField>
+
+<ResponseField name="analysis" type="object">
+  The structured wellbeing analysis produced by the AI model.
+  <Expandable title="analysis fields">
+    <ResponseField name="analysis.summary" type="string">
+      A 2–3 sentence prose summary of the session covering the main topics discussed and the emotional state of the participant.
+    </ResponseField>
+    <ResponseField name="analysis.trend" type="'improving' | 'stable' | 'declining'">
+      The model's assessment of the user's wellbeing trajectory relative to their history.
+
+      | Value | Meaning |
+      |---|---|
+      | `improving` | User shows positive coping, hope, or resolution |
+      | `stable` | Consistent state with no significant positive or negative change |
+      | `declining` | Worsening symptoms, hopelessness, or regression |
+    </ResponseField>
+    <ResponseField name="analysis.themes" type="string[]">
+      An array of 2–5 key topics extracted from the transcript (e.g. `["anxiety", "work stress", "coping strategies"]`).
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Errors
+
+| Status | Condition |
+|---|---|
+| `400` | Neither `sessionId` nor `recordingId` provided; or the resolved `transcript` is `null` / empty |
+| `401` | No authenticated user session |
+| `404` | `session_participants` row not found for the given `sessionId` and user; or `recordings` row not found for `recordingId` |
+| `500` | OpenRouter API error; failed to parse AI response JSON; or database insert into `ai_analyses` failed |
+
+<Note>
+  The `OPENROUTER_API_KEY` environment variable must be set. If it is absent the `analyzeTranscript` function throws immediately and the endpoint returns `500`.
+</Note>
+
+<Tip>
+  Opt journal entries into analysis by setting `includeInAnalysis: true` via [PATCH /api/journal](/api/journal). The more opted-in entries the model has access to, the better it can detect gradual trend changes that might not be apparent from a single session transcript alone.
+</Tip>
+
+---
+
+## Example
+
+### Analyze a session transcript
+
+```bash
+curl -X POST https://your-sahara-app.vercel.app/api/analyze \
+  -H "Content-Type: application/json" \
+  -H "Cookie: <SESSION_COOKIE>" \
+  -d '{
+    "sessionId": "a1b2c3d4-0000-4000-8000-112233445566"
+  }'
+```
+
+### Typical analysis response
+
+```json
+{
+  "success": true,
+  "analysis": {
+    "summary": "The participant discussed ongoing work-related anxiety and difficulty sleeping due to deadline pressure. They expressed cautious optimism about a new coping routine suggested by a peer, though frustration with their manager remains a central concern.",
+    "trend": "improving",
+    "themes": [
+      "work stress",
+      "anxiety",
+      "sleep difficulties",
+      "coping strategies"
+    ]
+  }
+}
+```
+
+### Analyze a standalone recording
+
+```bash
+curl -X POST https://your-sahara-app.vercel.app/api/analyze \
+  -H "Content-Type: application/json" \
+  -H "Cookie: <SESSION_COOKIE>" \
+  -d '{
+    "recordingId": "c7f2a891-dead-beef-cafe-123456789abc"
+  }'
+```
+
+### Error — no transcript available
+
+```json
+{
+  "error": "No transcript available"
+}
+```

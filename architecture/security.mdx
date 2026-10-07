@@ -1,0 +1,188 @@
+---
+title: "Security model and RLS in Sahara"
+sidebarTitle: "Security"
+description: "How Sahara enforces row-level security, isolates user identities, restricts professional access, and keeps sensitive data out of server logs."
+---
+
+Sahara is built on the assumption that users must be able to share difficult personal experiences without those disclosures ever being visible to other users — including other participants in the same session. Every table in the database has Row Level Security enabled. The Supabase service-role key, which bypasses RLS, is strictly server-side and never present in any `NEXT_PUBLIC_` environment variable. No page or component instantiates a Supabase client directly — all queries route through the factory functions in `lib/supabase/`.
+
+## RLS architecture
+
+### Client factories
+
+Two client factories exist, and choosing the wrong one for a given context is the most common source of privilege-escalation bugs.
+
+```typescript
+// lib/supabase/client.ts — browser-only, anon key, always RLS-restricted
+import { createBrowserClient } from '@supabase/ssr';
+
+export function createClient() {
+  return createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  );
+}
+```
+
+```typescript
+// lib/supabase/server.ts — two server-side factories
+
+// Uses the user's session cookie → subject to RLS
+export async function createServerClientInstance() {
+  const cookieStore = await cookies();
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    { cookies: { get, set, remove } }
+  );
+}
+
+// Uses the service-role key → bypasses RLS entirely
+export function createServiceRoleClient() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+}
+```
+
+`createServerClientInstance()` is the default for all Server Components and API routes that read or write data on behalf of a logged-in user. `createServiceRoleClient()` is reserved for server-side background jobs (transcription, AI analysis, helpline status updates) that must write rows the user's own RLS policies would reject.
+
+<Warning>
+  `createServiceRoleClient()` must never be called from a Client Component or from any code path that can be triggered by arbitrary user input without additional server-side authorization checks. Treat the service-role key with the same care as a database superuser password.
+</Warning>
+
+### Example: `users` table policies
+
+The `users` table exemplifies the "own row only" pattern applied consistently across the schema:
+
+```sql
+-- A user may read only their own profile row
+create policy "users can view own row"
+  on public.users for select
+  using (auth_id = auth.uid());
+
+-- A user may insert only a row that references their own auth identity
+create policy "users can insert own row"
+  on public.users for insert
+  with check (auth_id = auth.uid());
+
+-- A user may update only their own row
+create policy "users can update own row"
+  on public.users for update
+  using (auth_id = auth.uid());
+```
+
+No `SELECT` policy grants access to another user's row, which means a query like `.from('users').select('*')` issued by user A returns zero rows for user B — even though they may share a session.
+
+## Identity isolation
+
+Sahara deliberately provides no cross-user `SELECT` grant on any table that contains personal data. In practice this means:
+
+- A user in a group session cannot query the `users`, `session_participants`, `transcripts`, or `ai_analyses` rows of fellow participants.
+- `session_participants` has two `SELECT` policies: one for the owning user (`user_id = current_app_user_id()`) and one for the assigned professional. No policy grants access to any other user.
+- `journal_entries` has no professional-access policy at all. Journal content is private to the user who wrote it, even if that user has an assigned counselor.
+
+The `SECURITY DEFINER` helper functions (`current_app_user_id()`, `current_professional_id()`, `is_participant_in_session()`, `is_professional_for_session()`) are the only internal mechanism that queries across auth boundaries — and they do so only to resolve an identity, not to return row content.
+
+## Professional access
+
+Verified professionals receive expanded — but still narrowly scoped — read access. The pattern is always: "in sessions where `professional_id` matches `current_professional_id()`".
+
+```sql
+-- Professionals can view participants in their assigned sessions
+create policy "professionals can view participants in their sessions"
+  on public.session_participants for select
+  using (
+    current_professional_id() is not null
+    and is_professional_for_session(session_id)
+  );
+
+-- Professionals can view transcripts for their sessions
+create policy "professionals can view transcripts for their sessions"
+  on public.transcripts for select
+  using (
+    exists (
+      select 1 from public.session_participants sp
+      join public.sessions s on s.id = sp.session_id
+      where sp.id = transcripts.session_participant_id
+        and s.professional_id = current_professional_id()
+    )
+  );
+
+-- Professionals can view AI analyses for their sessions
+create policy "professionals can view analyses for their sessions"
+  on public.ai_analyses for select
+  using (
+    exists (
+      select 1 from public.sessions s
+      where s.id = ai_analyses.session_id
+        and s.professional_id = current_professional_id()
+    )
+  );
+```
+
+A professional who is not assigned to a session sees zero rows for participants, transcripts, and analyses belonging to that session. The `verified` flag on the `professionals` table is checked in `requireProfessional()` in `lib/auth/helpers.ts` before any professional-gated API route proceeds:
+
+```typescript
+export async function requireProfessional(): Promise<Professional> {
+  const professional = await getCurrentProfessional();
+  if (!professional) {
+    throw new Error('Unauthorized: Professional not authenticated');
+  }
+  if (!professional.verified) {
+    throw new Error('Forbidden: Professional not verified');
+  }
+  return professional;
+}
+```
+
+## Sensitive data handling
+
+| Concern | Mitigation |
+| --- | --- |
+| Transcript and journal content | Never written to server logs; processing happens in memory and the result is written directly to Supabase via the service-role client |
+| `SUPABASE_SERVICE_ROLE_KEY` | Stored as a server-side env var only; not prefixed with `NEXT_PUBLIC_` and therefore never bundled into client JavaScript |
+| `GROQ_API_KEY` / `LLM_API_KEY` | Server-side only; accessed exclusively in API route handlers and background jobs |
+| Google OAuth code exchange | Handled server-side in the `/auth/callback` route; the authorization code is never exposed to the browser |
+| Audio recordings bucket | Storage RLS policies scope upload, read, and delete operations to the folder matching `auth.uid()::text`, so one user cannot access another user's stored audio files |
+
+## Auth boundaries
+
+Next.js 16 renders Server Components by default. Data fetching, auth checks, and Supabase queries happen in Server Components unless interactivity requires `"use client"`. This keeps sensitive data processing off the client bundle entirely.
+
+The `lib/auth/helpers.ts` module provides the canonical way to access the current identity in Server Components and API routes:
+
+```typescript
+// Returns the public.users row for the logged-in user, or null
+export async function getCurrentUser(): Promise<User | null>
+
+// Returns the public.professionals row, or null
+export async function getCurrentProfessional(): Promise<Professional | null>
+
+// Throws if the user is not authenticated — use in API routes
+export async function requireUser(): Promise<User>
+
+// Throws if the professional is not authenticated or not verified
+export async function requireProfessional(): Promise<Professional>
+
+// Returns 'user', 'professional', or null
+export async function getUserRole(): Promise<'user' | 'professional' | null>
+```
+
+All of these functions call `createServerClientInstance()` internally, so they are always bound by RLS.
+
+<Warning>
+  Every new table added to the schema **must** include its RLS `ENABLE ROW LEVEL SECURITY` statement and at least one access policy in the same migration file that creates it. Deploying a table without RLS means all authenticated users can read and write every row until a follow-up migration is applied.
+</Warning>
+
+## Contributing checklist
+
+Before opening a pull request that touches auth, RLS, or the database schema, confirm all of the following:
+
+- `npm run lint` passes with zero errors.
+- `npm run typecheck` (`tsc --noEmit`) passes with zero errors.
+- Any new table includes `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` and at least one policy in the same migration.
+- No new `NEXT_PUBLIC_` variable holds a secret key.
+- No new Server Component or API route calls `createServiceRoleClient()` without a documented justification comment.
+- Commit message follows conventional commits format: `feat:`, `fix:`, `chore:`, `refactor:`, or `test:`.

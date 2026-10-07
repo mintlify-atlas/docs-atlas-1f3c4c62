@@ -1,47 +1,123 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get started with Sahara in minutes"
+sidebarTitle: "Quickstart"
+description: "Install dependencies, set environment variables, apply Supabase migrations, and run the Sahara dev server with a working peer-support session."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+By the end of this guide you will have Sahara running at `http://localhost:3000` with a real Supabase database, a connected LiveKit room server, and the AI pipeline wired up for post-session transcription and analysis. You will also create your first peer-support session to confirm that the full stack is operational.
 
 ## Prerequisites
 
-Before you begin, you must have:
+Before you begin, make sure you have the following available:
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+- **Node.js 18 or later** — Sahara uses Next.js 16 with React 19; older Node versions are not supported.
+- **A Supabase project** — either a [Supabase Cloud](https://supabase.com) project or a local instance started with the Supabase CLI (`supabase start`).
+- **A LiveKit server or LiveKit Cloud account** — a LiveKit API key and secret are required even in development because the server SDK generates room tokens on every session start.
+- **A Groq API key** — used to call `whisper-large-v3-turbo` for post-session transcription.
+- **An OpenRouter API key** — used for history-aware LLM analysis after transcription.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+
+  <Step title="Clone the repository and install dependencies">
 
     ```bash
-    npm install your-package
+    git clone https://github.com/Sushant-Poudel-Dev/Sahara.git
+    cd Sahara
+    npm install
     ```
+
+    The install step pulls all runtime and dev dependencies defined in `package.json`, including `@supabase/ssr`, `livekit-server-sdk`, `@livekit/components-react`, and the Playwright test runner.
+
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Configure environment variables">
+
+    Create a `.env.local` file in the project root. This file is git-ignored and must never be committed. See the [Environment Variables](/environment-variables) reference for a description of every key.
+
+    ```env
+    # Supabase
+    NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
+    NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+    SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+
+    # LiveKit
+    LIVEKIT_API_KEY=your_livekit_api_key
+    LIVEKIT_API_SECRET=your_livekit_api_secret
+    LIVEKIT_URL=your_livekit_url
+
+    # AI
+    GROQ_API_KEY=your_groq_api_key
+    OPENROUTER_API_KEY=your_openrouter_api_key
+    NEXT_PUBLIC_APP_URL=http://localhost:3000
+    ```
+
+    Find your Supabase URL and keys in the **Project Settings → API** panel of your Supabase dashboard. Find your LiveKit credentials in the **LiveKit Cloud dashboard** or your self-hosted server configuration.
+
+  </Step>
+
+  <Step title="Apply database migrations">
+
+    Sahara manages all schema changes through numbered Supabase CLI migrations in `supabase/migrations/` (currently `0001_init.sql` through `0013_journal_include_in_analysis.sql`). Every migration includes the RLS policies for the tables it creates.
+
+    **Against a Supabase Cloud project:**
 
     ```bash
-    your-cli init
+    supabase db push
     ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+    **With a local Supabase instance:**
 
     ```bash
-    your-cli start
+    supabase start      # starts local Postgres + Auth + Storage
+    supabase db push    # applies all migrations to the local instance
     ```
+
+    When `supabase start` completes it prints the local `API URL`, `anon key`, and `service_role key` — paste these into your `.env.local` to work entirely offline.
+
   </Step>
+
+  <Step title="Start the development server">
+
+    ```bash
+    npm run dev
+    ```
+
+    Next.js will compile the app and print:
+
+    ```
+    ▲ Next.js 16.3.3
+    - Local:  http://localhost:3000
+    ```
+
+    Open `http://localhost:3000` in your browser. You should see the Sahara landing page.
+
+  </Step>
+
+  <Step title="Create your first session">
+
+    1. **Sign up as a user** — click **Sign Up**, choose the *User* flow, enter a display name and email, and confirm your email if Supabase email confirmation is enabled.
+    2. **Browse groups** — after logging in you land on the user dashboard. Navigate to **Groups** to see the list of topic-based support groups seeded by the migrations.
+    3. **Join or create a session** — select a `peer` group and click **Join Session**. Sahara calls the session-start API route, which generates a LiveKit room token and inserts a `sessions` row. You are dropped into the LiveKit video room.
+    4. **End the session** — click **Leave**. The end-session route closes the room, and the post-session pipeline queues transcription via Groq Whisper followed by AI analysis via OpenRouter.
+    5. **Check progress** — navigate to **Progress** on the dashboard to see the `AIAnalysis` record with its `trend` value (`improving`, `stable`, or `declining`).
+
+  </Step>
+
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Available Scripts
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+| Script | Command | Description |
+|---|---|---|
+| `dev` | `npm run dev` | Start the Next.js development server with hot reload |
+| `build` | `npm run build` | Compile a production build and report bundle size |
+| `start` | `npm run start` | Serve the compiled production build locally |
+| `lint` | `npm run lint` | Run ESLint across all source files |
+| `typecheck` | `npm run typecheck` | Run `tsc --noEmit` — no output means no type errors |
+| `test` | `npm run test` | Execute the full Playwright test suite |
+
+Run `npm run lint` and `npm run typecheck` before every commit. Both checks are required to pass per the contributing guidelines.
+
+<Note>
+  LiveKit credentials (`LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, and `LIVEKIT_URL`) must be valid even in development. The `livekit-server-sdk` is invoked server-side every time a session starts to mint a participant token and create the room. Placeholder values will cause session-start API calls to fail with a 500 error. Use a free [LiveKit Cloud](https://livekit.io/cloud) project during development if you do not want to run a self-hosted server.
+</Note>

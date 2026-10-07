@@ -1,0 +1,108 @@
+{
+  "projectType": "saas",
+  "projectName": "Sahara",
+  "projectDescription": "An anonymous peer-support platform where users join video and text-based group sessions, with post-session AI transcription and wellbeing trend analysis.",
+  "theme": "almond",
+  "primaryColor": "#C27B3E",
+  "lightColor": "#F5EBD8",
+  "darkColor": "#7A4A1E",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "environment-variables"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/sessions",
+              "features/journal",
+              "features/progress",
+              "features/helpline"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/database",
+              "architecture/security"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/supabase",
+              "integrations/livekit",
+              "integrations/ai"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "API Overview",
+            "pages": [
+              "api/overview",
+              "api/authentication"
+            ]
+          },
+          {
+            "group": "Endpoints",
+            "pages": [
+              "api/groups",
+              "api/sessions",
+              "api/journal",
+              "api/transcribe",
+              "api/analyze"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Anonymous peer-support group video sessions via LiveKit",
+    "Separate user and professional (counselor) account flows",
+    "Post-session audio transcription using Groq Whisper (whisper-large-v3)",
+    "History-aware AI wellbeing trend analysis (improving / stable / declining)",
+    "Private journal with opt-in inclusion in AI analysis context",
+    "Progress tracking with trend visualization",
+    "Emergency helpline escalation to human professionals",
+    "Row-level security on every Supabase table for full identity isolation",
+    "Google OAuth and email/password authentication via Supabase Auth"
+  ],
+  "publicApiSurface": [
+    "POST /api/groups — create a support group",
+    "GET /api/groups — list support groups",
+    "GET /api/groups/[groupId] — get group details",
+    "POST /api/sessions/start?groupId= — start or join a session, returns LiveKit token",
+    "POST /api/sessions/end — end an active session",
+    "POST /api/sessions/recording — save a session audio recording",
+    "POST /api/journal — create a journal entry",
+    "PATCH /api/journal — toggle include_in_analysis flag on a journal entry",
+    "DELETE /api/journal?id= — delete a journal entry",
+    "POST /api/transcribe — transcribe an audio recording via Groq Whisper",
+    "POST /api/analyze — run AI wellbeing analysis on a transcript",
+    "GET /auth/callback — Supabase OAuth callback handler",
+    "GET /auth/logout — sign-out route",
+    "getCurrentUser() — lib/auth/helpers",
+    "getCurrentProfessional() — lib/auth/helpers",
+    "requireUser() — lib/auth/helpers",
+    "requireProfessional() — lib/auth/helpers",
+    "generateParticipantToken() — lib/livekit/server",
+    "createLiveKitRoom() — lib/livekit/server",
+    "transcribeAudio() — lib/ai/stt",
+    "analyzeTranscript() — lib/ai/analysis",
+    "getUserTranscriptHistory() — lib/ai/analysis"
+  ]
+}
